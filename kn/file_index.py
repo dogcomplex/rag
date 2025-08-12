@@ -3,6 +3,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from .utils.io import read_text_safely, ensure_dirs
 from .hashing import content_hash, short_hash
+from .jobs_sqlite import ensure_db as _ensure_jobs_db, enqueue as _enqueue_job
 
 _manifest = {}  # path -> {doc_id, hash, mtime}
 IGNORE_DIRS = {".git", ".knowledge"}
@@ -41,10 +42,19 @@ class _Evt(FileSystemEventHandler):
         record = {"doc_id": short_hash(ch), "hash": ch, "mtime": p.stat().st_mtime}
         _manifest[str(p)] = record
         print(f"[watch] change: {p}")
-        # enqueue attributes here later if desired
+        # auto-enqueue attribute jobs (doc-level) if configured
+        attrs = self.cfg.get("attributes", {})
+        if attrs.get("auto_enqueue", False):
+            plugins = attrs.get("plugins", [])
+            for plugin in plugins:
+                _enqueue_job(self.cfg, plugin, record["doc_id"], payload={"path": str(p)})
 
 def watch_changes(repo_path: pathlib.Path, cfg):
     ensure_dirs()
+    # ensure jobs db exists if auto-enqueue is enabled
+    attrs = cfg.get("attributes", {})
+    if attrs.get("auto_enqueue", False):
+        _ensure_jobs_db(cfg)
     obs = Observer()
     obs.schedule(_Evt(cfg), str(repo_path), recursive=True)
     obs.start()

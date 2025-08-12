@@ -40,7 +40,8 @@ def load_configs():
                   "entity_extraction":"selective", "relation_extraction":"selective"},
         "chunking": {"policies":{"default":{"max_chars":4000,"overlap":400},
                                  "code":{"max_chars":2400,"overlap":200},
-                                 "pdf":{"max_chars":3500,"overlap":200}}}
+                                  "pdf":{"max_chars":3500,"overlap":200}}},
+        "attributes": {"plugins": ["summary-20w", "topic-tags", "pii-scan"], "auto_enqueue": True}
     }
     if models_yml.exists():
         cfg = _merge(cfg, yaml.safe_load(models_yml.read_text(encoding="utf-8")))

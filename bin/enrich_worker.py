@@ -8,12 +8,13 @@ def run_once(plugins, cfg, batch_size=16):
     if not jobs:
         return 0
     docs = iter_docs_for_jobs(jobs)
-    import subprocess, json, pathlib
+    import subprocess, json, pathlib, sys
     by_plugin = {}
     for j in jobs:
         by_plugin.setdefault(j["plugin"], []).append(j)
     for plugin, items in by_plugin.items():
-        pypath = pathlib.Path(f"plugins/attributes/{plugin}.py")
+        fs_name = plugin.replace('-', '_')
+        pypath = pathlib.Path(f"plugins/attributes/{fs_name}.py")
         if not pypath.exists():
             print(f"[enrich] plugin not found: {plugin}")
             for j in items: ack_job(cfg, j["id"])
@@ -26,7 +27,7 @@ def run_once(plugins, cfg, batch_size=16):
         if not inp_lines:
             for j in items: ack_job(cfg, j["id"])
             continue
-        proc = subprocess.Popen(["python", str(pypath)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        proc = subprocess.Popen([sys.executable, str(pypath)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         out, _ = proc.communicate("\n".join(inp_lines))
         print(f"[enrich] {plugin}: {len(items)} docs processed")
         for j in items: ack_job(cfg, j["id"])

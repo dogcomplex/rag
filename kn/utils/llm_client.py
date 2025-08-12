@@ -1,8 +1,17 @@
 import os, requests
-BASE = os.getenv('OPENAI_BASE_URL', 'http://localhost:1234/v1')
-KEY  = os.getenv('OPENAI_API_KEY', 'lm-studio')
-MODEL= os.getenv('OPENAI_MODEL', 'llama-3.1-8b-instruct')
+from dotenv import load_dotenv
+
+# Load .env, but don't override a process-level env already set
+load_dotenv(override=False)
+
+def _settings():
+    base = os.getenv('OPENAI_BASE_URL', 'http://localhost:1234/v1')
+    key  = os.getenv('OPENAI_API_KEY', 'lm-studio')
+    model= os.getenv('OPENAI_MODEL', 'llama-3.1-8b-instruct')
+    return base, key, model
+
 def chat(prompt: str, max_tokens=512, temperature=0.2):
+    BASE, KEY, MODEL = _settings()
     url = f"{BASE}/chat/completions"
     headers = {'Authorization': f"Bearer {KEY}", 'Content-Type':'application/json'}
     payload = {
