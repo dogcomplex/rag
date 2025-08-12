@@ -1,0 +1,4 @@
+-r requirements.txt
+# CUDA PyTorch (CUDA 12.8) if needed:
+# pip install --index-url https://download.pytorch.org/whl/cu128 ^
+#   torch==2.6.0+cu128 torchvision==0.21.0+cu128 torchaudio==2.6.0+cu128

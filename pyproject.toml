@@ -1,0 +1,5 @@
+[project]
+name = "kn-graphrag-starter"
+version = "0.1.0"
+description = "Local modular GraphRAG pipeline (Windows + LM Studio)"
+requires-python = ">=3.10"
