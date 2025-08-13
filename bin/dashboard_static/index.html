@@ -65,6 +65,15 @@
       </div>
 
       <hr/>
+      <h3>Ingest</h3>
+      <div class="row" style="margin-bottom:8px;">
+        <input id="ingest_path" placeholder="repo path (e.g., G:\\LOKI\\papers)" style="flex:1" />
+        <label><input id="ingest_full" type="checkbox" checked /> full</label>
+      </div>
+      <div class="row">
+        <button class="btn" onclick="startIngest()">Start Ingest</button>
+      </div>
+      <hr/>
       <h3>Direct Enqueue</h3>
       <div class="row" style="margin-bottom:8px;">
         <input id="doc_ids" placeholder="doc ids comma-separated (leave empty = all)" style="flex:1" />
@@ -81,19 +90,38 @@
       </div>
       <div class="row">
         <button class="btn" onclick="startWorker()">Start Worker</button>
-        <button class="btn" onclick="stopWorker()">Stop Worker</button>
+        <button class="btn" onclick="stopWorkerAll()">Stop All</button>
       </div>
+      <div id="workers_list" style="margin-top:8px;"></div>
     </section>
 
     <section class="panel" id="status">
       <h3>Status</h3>
       <div id="llm"></div>
       <div class="grid" id="queue"></div>
+      <details style="margin:8px 0;">
+        <summary><b>Queue listing</b> <small>(ordered by id asc)</small></summary>
+        <div class="row" style="margin:6px 0;">
+          <label>Status</label>
+          <select id="queue_status"><option value="">(any)</option><option>pending</option><option>running</option><option>done</option></select>
+          <label>Plugin</label>
+          <input id="queue_plugin" placeholder="(any)" />
+          <label>Limit</label>
+          <input id="queue_limit" type="number" value="200" style="width:90px" />
+          <button class="btn" onclick="loadQueueList()">Load</button>
+          <span style="flex:1"></span>
+          <label>Clear</label>
+          <select id="queue_clear_mode"><option value="non-done">non-done</option><option value="pending">pending</option><option value="reset-running">reset running→pending</option><option value="all">all</option></select>
+          <button class="btn" onclick="clearQueue()">Clear Queue</button>
+        </div>
+        <div id="queue_list" style="max-height:240px; overflow:auto; border:1px solid #eee; border-radius:6px; padding:6px;"></div>
+      </details>
       <div class="row" style="justify-content:space-between;align-items:center;">
         <h3>Attributes Coverage</h3>
         <div><label><input id="auto_refresh" type="checkbox" checked /> auto-refresh</label>
         <select id="refresh_sec"><option>3</option><option selected>5</option><option>10</option><option>30</option></select></div>
       </div>
+      <div id="coverage_overall"></div>
       <div id="coverage"></div>
       <h3 style="margin-top:16px;">Domains</h3>
       <div id="domains"></div>
@@ -109,6 +137,12 @@
   </main>
 
   <script>
+    // coverage open state persists across refreshes
+    window.__COV_OPEN__ = window.__COV_OPEN__ || new Set();
+    window.__COV_DOC_OPEN__ = window.__COV_DOC_OPEN__ || {}; // plugin -> Set(doc_id)
+    window.__COV_DATA__ = window.__COV_DATA__ || {}; // plugin -> {present, missing}
+    window.__ATTR_ITEM_CACHE__ = window.__ATTR_ITEM_CACHE__ || {}; // key: plugin|doc -> json
+
     async function refresh(){
       const r = await fetch('/api/status');
       const data = await r.json();
@@ -143,14 +177,20 @@
       await fetch('/api/enqueue', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({plugins, doc_ids})});
       await refresh();
     }
+    async function startIngest(){
+      const repo = document.getElementById('ingest_path').value||'';
+      const full = document.getElementById('ingest_full').checked;
+      if(!repo){ alert('Enter a repo path'); return; }
+      await fetch('/api/ingest', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({repo, full})});
+    }
     async function startWorker(){
       const plugins = (document.getElementById('worker_plugins').value||'').split(',').map(s=>s.trim()).filter(Boolean);
       const batch = parseInt(document.getElementById('worker_batch').value||'32');
       await fetch('/api/worker/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({plugins, batch})});
       await refresh();
     }
-    async function stopWorker(){
-      await fetch('/api/worker/stop', {method:'POST'});
+    async function stopWorkerAll(){
+      await fetch('/api/worker/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
       await refresh();
     }
     function render(data){
@@ -177,16 +217,12 @@
         rows.push(`<div class="panel"><div><b>${k}</b>${est}${dps}${etaPlug}</div><div><small>${JSON.stringify(bp[k])}</small></div></div>`);
       });
       qdiv.innerHTML = rows.join('');
+      // refresh queue list silently if already populated
+      if(document.getElementById('queue_list').getAttribute('data-has')==='1'){
+        loadQueueList(true);
+      }
 
-      const cov = data.attributes_coverage||{};
-      const covDiv = document.getElementById('coverage');
-      const covRows = ['<table><thead><tr><th>Attribute</th><th>Have/Total</th><th>pct</th><th>Missing (examples)</th></tr></thead><tbody>'];
-      Object.keys(cov).sort().forEach(k=>{
-        const v = cov[k];
-        covRows.push(`<tr><td>${k}</td><td>${v.have}/${v.total_docs}</td><td>${v.pct}%</td><td>${(v.missing_examples||[]).join(', ')}</td></tr>`);
-      });
-      covRows.push('</tbody></table>');
-      covDiv.innerHTML = covRows.join('');
+      renderCoverage(data);
 
       const domDiv = document.getElementById('domains');
       const d = data.domains||[];
@@ -195,6 +231,7 @@
       const w = data.worker||{};
       const log = (w.log_tail||[]).join('\n');
       document.getElementById('worker_log').textContent = (w.running? '[running]\n' : '[stopped]\n') + log;
+      renderWorkers(data.workers||[]);
 
       window.__STATUS__ = data;
       if(!window.__DOCS__){ loadDocs(); }
@@ -210,8 +247,142 @@
       const h = Math.floor(sec/3600); const m = Math.floor((sec%3600)/60); const s = sec%60;
       return (h>0? h+'h ': '') + (m>0? m+'m ': '') + s + 's';
     }
+    function renderWorkers(list){
+      const root = document.getElementById('workers_list');
+      if(!list || !list.length){ root.innerHTML = '<small>No workers</small>'; return; }
+      root.innerHTML = '<table><thead><tr><th>ID</th><th>PID</th><th>Plugins</th><th>Batch</th><th>Started</th><th>Status</th><th></th></tr></thead><tbody>'+
+        list.map(w=>`<tr><td>${w.id}</td><td>${w.pid||''}</td><td><small>${(w.plugins||[]).join(', ')}</small></td><td>${w.batch||''}</td><td><small>${w.started_at||''}</small></td><td>${w.running?'running':'stopped'}</td><td><button class=btn onclick=\"stopWorker(${w.id})\">Stop</button></td></tr>`).join('')+
+        '</tbody></table>';
+    }
+    async function stopWorker(id){
+      await fetch('/api/worker/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})});
+      await refresh();
+    }
+    async function loadQueueList(silent){
+      const status = document.getElementById('queue_status').value;
+      const plugin = document.getElementById('queue_plugin').value;
+      const limit = parseInt(document.getElementById('queue_limit').value||'200');
+      const params = new URLSearchParams();
+      if(status) params.set('status', status);
+      if(plugin) params.set('plugin', plugin);
+      if(limit) params.set('limit', String(limit));
+      const r = await fetch('/api/queue/list?' + params.toString());
+      const data = await r.json();
+      const items = data.items||[];
+      const root = document.getElementById('queue_list');
+      root.setAttribute('data-has','1');
+      root.innerHTML = '<table><thead><tr><th>ID</th><th>Status</th><th>Plugin</th><th>Doc</th><th>Created</th></tr></thead><tbody>'
+        + items.map(i=>`<tr><td>${i.id}</td><td>${i.status}</td><td>${i.plugin}</td><td>${i.doc_id}</td><td>${i.created_at||''}</td></tr>`).join('')
+        + '</tbody></table>';
+    }
+    async function clearQueue(){
+      const mode = document.getElementById('queue_clear_mode').value||'non-done';
+      await fetch('/api/queue/clear', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode})});
+      await loadQueueList(true);
+      await refresh();
+    }
+    function renderCoverage(data){
+      const cov = data.attributes_coverage||{};
+      const covDiv = document.getElementById('coverage');
+      const bp2 = (data.queue||{}).by_plugin_status||{};
+      const dur2 = (data.queue||{}).durations||{};
+      const thr2 = (data.queue||{}).throughput||{};
+      const eta2 = (data.queue||{}).eta||{};
+      const overallEtaTxt = (eta2 && eta2.overall_sec!=null) ? `Overall ETA: ${fmtDur(eta2.overall_sec)}` : '';
+      document.getElementById('coverage_overall').innerHTML = overallEtaTxt? `<small>${overallEtaTxt}</small>` : '';
+      const rows = ['<table><thead><tr><th></th><th>Attribute</th><th>Have/Total</th><th>pct</th><th>Pending</th><th>Running</th><th>Avg s</th><th>DPS</th><th>ETA</th><th>Missing (examples)</th></tr></thead><tbody>'];
+      const plugins = Object.keys(cov).sort();
+      for(const k of plugins){
+        const v = cov[k];
+        const st = bp2[k]||{}; const d = dur2[k];
+        const dps = (thr2.plugin_dps||{})[k];
+        const etaS = (eta2.plugin_sec||{})[k];
+        const isOpen = window.__COV_OPEN__.has(k);
+        rows.push(`<tr onclick=\"toggleCov('${k}')\" style=\"cursor:pointer;\">`
+          + `<td style=\"width:18px;\"><span id=\"cov_arrow_${k}\">${isOpen?'▾':'›'}</span></td>`
+          + `<td>${k}</td>`
+          + `<td>${v.have}/${v.total_docs}</td>`
+          + `<td>${v.pct}%</td>`
+          + `<td>${st.pending||0}</td>`
+          + `<td>${st.running||0}</td>`
+          + `<td>${d? d.avg_s: ''}</td>`
+          + `<td>${dps!=null? dps: ''}</td>`
+          + `<td>${etaS!=null? fmtDur(etaS): ''}</td>`
+          + `<td>${(v.missing_examples||[]).join(', ')}</td>`
+          + `</tr>`);
+        // doc rows
+        if(isOpen){
+          const pdata = window.__COV_DATA__[k];
+          const present = (pdata && pdata.present) ? pdata.present : [];
+          for(const item of present){
+            const doc_id = item.doc_id; const prev = item.preview||'';
+            const docOpen = (window.__COV_DOC_OPEN__[k]||new Set()).has(doc_id);
+            rows.push(`<tr onclick=\"toggleCovDoc(event,'${k}','${doc_id}')\" style=\"cursor:pointer;\">`
+              + `<td></td>`
+              + `<td colspan=2><span id=\"cov_doc_arrow_${k}_${doc_id}\">${docOpen?'▾':'›'}</span> <b>${doc_id}</b></td>`
+              + `<td colspan=7 style=\"color:#555;\">${escapeHtml(prev)}</td>`
+              + `</tr>`);
+            // full content row
+            const key = `${k}|${doc_id}`;
+            const hasFull = window.__ATTR_ITEM_CACHE__[key] != null;
+            rows.push(`<tr id=\"cov_full_${k}_${doc_id}\" style=\"display:${docOpen?'':'none'};\"><td></td><td colspan=9><pre style=\"white-space:pre-wrap;background:#f6f6f6;padding:8px;border-radius:6px;\" id=\"cov_pre_${k}_${doc_id}\">${hasFull? escapeHtml(JSON.stringify(window.__ATTR_ITEM_CACHE__[key], null, 2)) : ''}</pre></td></tr>`);
+          }
+        }
+      }
+      rows.push('</tbody></table>');
+      covDiv.innerHTML = rows.join('');
+    }
+    async function toggleCov(plugin){
+      if(window.__COV_OPEN__.has(plugin)){
+        window.__COV_OPEN__.delete(plugin);
+        renderCoverage(window.__STATUS__);
+        return;
+      }
+      // open
+      window.__COV_OPEN__.add(plugin);
+      if(!window.__COV_DATA__[plugin]){
+        const r = await fetch(`/api/attr/${plugin}/docs`);
+        const data = await r.json();
+        window.__COV_DATA__[plugin] = data;
+      }
+      renderCoverage(window.__STATUS__);
+    }
+    async function toggleCovDoc(evt, plugin, doc_id){
+      evt.stopPropagation();
+      const set = (window.__COV_DOC_OPEN__[plugin] = window.__COV_DOC_OPEN__[plugin] || new Set());
+      const key = `${plugin}|${doc_id}`;
+      if(set.has(doc_id)){
+        set.delete(doc_id);
+        const row = document.getElementById(`cov_full_${plugin}_${doc_id}`);
+        const arrow = document.getElementById(`cov_doc_arrow_${plugin}_${doc_id}`);
+        if(row){ row.style.display = 'none'; }
+        if(arrow){ arrow.textContent = '›'; }
+        return;
+      }
+      set.add(doc_id);
+      // ensure content
+      if(window.__ATTR_ITEM_CACHE__[key] == null){
+        const r = await fetch(`/api/doc/${doc_id}/attr/${plugin}`);
+        const data = await r.json();
+        window.__ATTR_ITEM_CACHE__[key] = (data.item||data);
+      }
+      const pre = document.getElementById(`cov_pre_${plugin}_${doc_id}`);
+      const row = document.getElementById(`cov_full_${plugin}_${doc_id}`);
+      const arrow = document.getElementById(`cov_doc_arrow_${plugin}_${doc_id}`);
+      if(pre){ pre.textContent = JSON.stringify(window.__ATTR_ITEM_CACHE__[key], null, 2); }
+      if(row){ row.style.display = ''; }
+      if(arrow){ arrow.textContent = '▾'; }
+    }
+    function escapeHtml(s){
+      return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+    }
   </script>
   <script>
+    // persist open state for docs and per-doc attributes
+    window.__DOC_OPEN__ = window.__DOC_OPEN__ || new Set();
+    window.__DOC_ATTR_OPEN__ = window.__DOC_ATTR_OPEN__ || {}; // doc_id -> Set(plugin)
+    window.__DOC_META__ = window.__DOC_META__ || {}; // doc_id -> {meta, attributes}
+
     async function loadDocs(){
       const r = await fetch('/api/docs');
       const data = await r.json();
@@ -222,41 +393,73 @@
       const docs = (window.__DOCS__||[]).slice();
       const q = (document.getElementById('doc_filter').value||'').toLowerCase();
       const root = document.getElementById('docs');
-      const rows = [];
+      const rows = ['<table><thead><tr><th></th><th>Doc ID</th><th>Domain</th><th>Path</th></tr></thead><tbody>'];
       docs.filter(d=>!q || d.doc_id.toLowerCase().includes(q) || (d.domain||'').toLowerCase().includes(q))
           .forEach(d=>{
-        rows.push(`<details><summary><b>${d.doc_id}</b> <small>${d.domain}</small> <span class=mono>${d.path||''}</span></summary>
-          <div class=grid>
-            ${attrButton(d.doc_id,'summary-20w')}
-            ${attrButton(d.doc_id,'topic-tags')}
-            ${attrButton(d.doc_id,'pii-scan')}
-            ${attrButton(d.doc_id,'glossary')}
-            ${attrButton(d.doc_id,'requirements')}
-            ${attrButton(d.doc_id,'todo-items')}
-            ${attrButton(d.doc_id,'faq-pairs')}
-            ${attrButton(d.doc_id,'keyphrases')}
-            ${attrButton(d.doc_id,'bridge-candidates')}
-            ${attrButton(d.doc_id,'risk-scan')}
-            ${attrButton(d.doc_id,'recent-summary')}
-            ${attrButton(d.doc_id,'summary-short')}
-            ${attrButton(d.doc_id,'summary-medium')}
-            ${attrButton(d.doc_id,'summary-long')}
-            ${attrButton(d.doc_id,'summary-outline')}
-          </div>
-          <pre id="doc_${d.doc_id}" style="white-space:pre-wrap;background:#f6f6f6;padding:8px;border-radius:6px;display:none"></pre>
-        </details>`);
+        const open = window.__DOC_OPEN__.has(d.doc_id);
+        rows.push(`<tr onclick=\"toggleDoc('${d.doc_id}')\" style=\"cursor:pointer;\">`
+          + `<td style=\"width:18px;\"><span id=\"doc_arrow_${d.doc_id}\">${open?'▾':'›'}</span></td>`
+          + `<td><b>${d.doc_id}</b></td>`
+          + `<td><small>${d.domain||''}</small></td>`
+          + `<td><span class=mono>${d.path||''}</span></td>`
+          + `</tr>`);
+        if(open){
+          const meta = window.__DOC_META__[d.doc_id];
+          const attrs = meta && meta.attributes ? meta.attributes : {};
+          const plugs = Object.keys(attrs).sort();
+          for(const plug of plugs){
+            const attrOpen = (window.__DOC_ATTR_OPEN__[d.doc_id]||new Set()).has(plug);
+            rows.push(`<tr onclick=\"toggleDocAttr(event,'${d.doc_id}','${plug}')\" style=\"cursor:pointer;\">`
+              + `<td></td>`
+              + `<td colspan=2><span id=\"doc_attr_arrow_${d.doc_id}_${plug}\">${attrOpen?'▾':'›'}</span> ${plug}</td>`
+              + `<td></td>`
+              + `</tr>`);
+            rows.push(`<tr id=\"doc_attr_full_${d.doc_id}_${plug}\" style=\"display:${attrOpen?'':'none'};\"><td></td><td colspan=3><pre style=\"white-space:pre-wrap;background:#f6f6f6;padding:8px;border-radius:6px;\" id=\"doc_attr_pre_${d.doc_id}_${plug}\"></pre></td></tr>`);
+          }
+        }
       });
+      rows.push('</tbody></table>');
       root.innerHTML = rows.join('');
     }
-    function attrButton(doc_id, plug){
-      return `<button class=btn onclick=showAttr('${doc_id}','${plug}')>${plug}</button>`;
+    async function toggleDoc(doc_id){
+      if(window.__DOC_OPEN__.has(doc_id)){
+        window.__DOC_OPEN__.delete(doc_id);
+        renderDocs();
+        return;
+      }
+      window.__DOC_OPEN__.add(doc_id);
+      if(!window.__DOC_META__[doc_id]){
+        const r = await fetch(`/api/doc/${doc_id}`);
+        const data = await r.json();
+        window.__DOC_META__[doc_id] = data;
+      }
+      renderDocs();
     }
-    async function showAttr(doc_id, plug){
-      const r = await fetch(`/api/doc/${doc_id}/attr/${plug}`);
-      const data = await r.json();
-      const pre = document.getElementById(`doc_${doc_id}`);
-      pre.style.display = 'block';
-      pre.textContent = JSON.stringify(data.item||data, null, 2);
+    async function toggleDocAttr(evt, doc_id, plug){
+      evt.stopPropagation();
+      const set = (window.__DOC_ATTR_OPEN__[doc_id] = window.__DOC_ATTR_OPEN__[doc_id] || new Set());
+      const key = `${plug}|${doc_id}`;
+      if(set.has(plug)){
+        set.delete(plug);
+        const row = document.getElementById(`doc_attr_full_${doc_id}_${plug}`);
+        const arrow = document.getElementById(`doc_attr_arrow_${doc_id}_${plug}`);
+        if(row){ row.style.display = 'none'; }
+        if(arrow){ arrow.textContent = '›'; }
+        return;
+      }
+      set.add(plug);
+      // fetch content if not cached
+      if(window.__ATTR_ITEM_CACHE__[key] == null){
+        const r = await fetch(`/api/doc/${doc_id}/attr/${plug}`);
+        const data = await r.json();
+        window.__ATTR_ITEM_CACHE__[key] = (data.item||data);
+      }
+      const pre = document.getElementById(`doc_attr_pre_${doc_id}_${plug}`);
+      const row = document.getElementById(`doc_attr_full_${doc_id}_${plug}`);
+      const arrow = document.getElementById(`doc_attr_arrow_${doc_id}_${plug}`);
+      if(pre){ pre.textContent = JSON.stringify(window.__ATTR_ITEM_CACHE__[key], null, 2); }
+      if(row){ row.style.display = ''; }
+      if(arrow){ arrow.textContent = '▾'; }
     }
     
   </script>

@@ -15,11 +15,15 @@ def ensure_db(cfg):
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
-    # add completed_at if missing
+    # add optional columns if missing (migrations)
     try:
         cols = [r[1] for r in con.execute("PRAGMA table_info(jobs)").fetchall()]
         if 'completed_at' not in cols:
             con.execute("ALTER TABLE jobs ADD COLUMN completed_at TIMESTAMP")
+        if 'retries' not in cols:
+            con.execute("ALTER TABLE jobs ADD COLUMN retries INTEGER DEFAULT 0")
+        if 'last_error' not in cols:
+            con.execute("ALTER TABLE jobs ADD COLUMN last_error TEXT")
     except Exception:
         pass
     con.commit(); con.close()
@@ -43,6 +47,14 @@ def dequeue_batch(cfg, wanted_plugins, limit=16):
     return [{"id": r[0], "plugin": r[1], "doc_id": r[2], "payload": json.loads(r[3] or '{}')} for r in rows]
 def ack_job(cfg, job_id: int):
     con = sqlite3.connect(_db_path(cfg)); con.execute("UPDATE jobs SET status='done', completed_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+    con.commit(); con.close()
+
+def fail_and_requeue_job(cfg, job_id: int, error_message: str|None=None, back_to_pending: bool=True):
+    con = sqlite3.connect(_db_path(cfg))
+    if back_to_pending:
+        con.execute("UPDATE jobs SET status='pending', retries=coalesce(retries,0)+1, last_error=? WHERE id=?", (error_message, job_id))
+    else:
+        con.execute("UPDATE jobs SET status='failed', retries=coalesce(retries,0)+1, last_error=? WHERE id=?", (error_message, job_id))
     con.commit(); con.close()
 def iter_docs_for_jobs(jobs):
     from pathlib import Path

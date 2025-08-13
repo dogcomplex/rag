@@ -11,8 +11,9 @@ STATIC_DIR = BASE_DIR / 'dashboard_static'
 app = Flask(__name__, static_folder=str(STATIC_DIR))
 
 from collections import deque
-WORKER_PROC = None
-WORKER_LOG = deque(maxlen=300)
+import itertools, datetime
+_WORKER_ID_GEN = itertools.count(1)
+WORKERS: dict[int, dict] = {}
 
 CHUNKS_DIR = pathlib.Path('.knowledge/indexes/chunks')
 ATTR_DIR = pathlib.Path('.knowledge/indexes/attributes')
@@ -151,10 +152,22 @@ def _read_jobs_status():
 @app.get('/api/status')
 def api_status():
     data = _read_jobs_status()
-    data['worker'] = {
-        'running': WORKER_PROC is not None and (WORKER_PROC.poll() is None),
-        'log_tail': list(WORKER_LOG)[-50:],
-    }
+    workers = []
+    for wid, w in WORKERS.items():
+        proc = w.get('proc')
+        workers.append({
+            'id': wid,
+            'pid': proc.pid if proc else None,
+            'running': (proc is not None and proc.poll() is None),
+            'plugins': w.get('plugins'),
+            'batch': w.get('batch'),
+            'watch': w.get('watch'),
+            'started_at': w.get('started_at'),
+            'log_tail': list(w.get('log', deque()))[-50:],
+        })
+    data['workers'] = workers
+    if workers:
+        data['worker'] = workers[0]
     return jsonify(data)
 
 @app.post('/api/enqueue')
@@ -191,42 +204,78 @@ def api_plan():
     return jsonify({'ok': True})
 
 def _spawn_worker(plugins: list[str], batch: int, watch: bool=True):
-    global WORKER_PROC
-    if WORKER_PROC and WORKER_PROC.poll() is None:
-        return False
     args = [sys.executable, '-X', 'utf8', 'bin/enrich_worker.py', '--plugins', ','.join(plugins), '--batch', str(batch)]
     if watch:
         args.append('--watch')
     env = os.environ.copy(); env['PYTHONPATH'] = str(pathlib.Path.cwd())
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-    WORKER_PROC = proc
+    wid = next(_WORKER_ID_GEN)
+    wlog = deque(maxlen=500)
+    WORKERS[wid] = {
+        'proc': proc,
+        'plugins': plugins,
+        'batch': batch,
+        'watch': watch,
+        'started_at': datetime.datetime.now().isoformat(timespec='seconds'),
+        'log': wlog,
+    }
     def _reader():
         try:
             for line in proc.stdout:
-                WORKER_LOG.append(line.rstrip())
+                wlog.append(line.rstrip())
         except Exception:
             pass
     threading.Thread(target=_reader, daemon=True).start()
-    return True
+    return wid
 
 @app.post('/api/worker/start')
 def api_worker_start():
     body = request.get_json(force=True, silent=True) or {}
     plugins = body.get('plugins') or ['summaries','keyphrases','bridge-candidates','risk-scan','recent-summary']
     batch = int(body.get('batch') or 32)
-    ok = _spawn_worker(plugins, batch, watch=True)
-    return jsonify({'started': ok})
+    wid = _spawn_worker(plugins, batch, watch=True)
+    return jsonify({'started': True, 'worker_id': wid})
 
 @app.post('/api/worker/stop')
 def api_worker_stop():
-    global WORKER_PROC
-    if WORKER_PROC and (WORKER_PROC.poll() is None):
+    body = request.get_json(force=True, silent=True) or {}
+    wid = body.get('id') or body.get('worker_id')
+    if wid is None:
+        # stop all
+        for wid2 in list(WORKERS.keys()):
+            _stop_worker_id(wid2)
+        return jsonify({'stopped_all': True})
+    ok = _stop_worker_id(int(wid))
+    return jsonify({'stopped': ok, 'worker_id': wid})
+
+def _stop_worker_id(wid: int) -> bool:
+    w = WORKERS.get(wid)
+    if not w:
+        return False
+    proc = w.get('proc')
+    if proc and (proc.poll() is None):
         try:
-            WORKER_PROC.terminate()
+            proc.terminate()
         except Exception:
             pass
-    WORKER_PROC = None
-    return jsonify({'stopped': True})
+    WORKERS.pop(wid, None)
+    return True
+
+@app.get('/api/workers')
+def api_workers():
+    out = []
+    for wid, w in WORKERS.items():
+        proc = w.get('proc')
+        out.append({
+            'id': wid,
+            'pid': proc.pid if proc else None,
+            'running': (proc is not None and proc.poll() is None),
+            'plugins': w.get('plugins'),
+            'batch': w.get('batch'),
+            'watch': w.get('watch'),
+            'started_at': w.get('started_at'),
+        })
+    return jsonify({'workers': out})
 
 @app.get('/')
 def root():
@@ -265,6 +314,21 @@ def api_docs():
         meta = rec.get('meta') or {}
         docs.append({'doc_id': d, 'domain': meta.get('domain','root'), 'path': meta.get('path','')})
     return jsonify({'docs': docs})
+
+@app.post('/api/ingest')
+def api_ingest():
+    body = request.get_json(force=True, silent=True) or {}
+    repo = body.get('repo') or body.get('path')
+    full = bool(body.get('full', True))
+    if not repo:
+        return jsonify({'error':'missing repo path'}), 400
+    # spawn ingest_build_graph.py
+    env = os.environ.copy(); env['PYTHONPATH'] = str(pathlib.Path.cwd())
+    args = [sys.executable, '-X', 'utf8', 'bin/ingest_build_graph.py', '--repo', repo]
+    if full:
+        args.append('--full')
+    subprocess.Popen(args, env=env)
+    return jsonify({'ok': True, 'started': True, 'repo': repo, 'full': full})
 
 def _attr_paths_for_doc(doc_id: str):
     out = {}
@@ -331,4 +395,79 @@ def report_static(path):
     if not REPORT_DIR.exists():
         return jsonify({'error': 'report dir not found'}), 404
     return send_from_directory(str(REPORT_DIR), path)
+
+# Attribute-wise listing across documents
+@app.get('/api/attr/<plugin>/docs')
+def api_attr_docs(plugin):
+    pdir = ATTR_DIR / plugin
+    present = []
+    if pdir.exists() and pdir.is_dir():
+        for f in sorted(pdir.glob('*.json')):
+            try:
+                data = json.loads(f.read_text(encoding='utf-8'))
+                doc_id = data.get('doc_id') or f.stem
+                val = data.get('value')
+                preview = None
+                if isinstance(val, str):
+                    preview = val.strip().replace('\n',' ')[:160]
+                present.append({'doc_id': doc_id, 'path': str(f), 'preview': preview})
+            except Exception:
+                doc_id = f.stem
+                present.append({'doc_id': doc_id, 'path': str(f)})
+    all_docs = _unique_doc_ids()
+    have = {i['doc_id'] for i in present}
+    missing = sorted([d for d in all_docs if d not in have])
+    return jsonify({'plugin': plugin, 'present': present, 'missing': missing})
+
+# Queue listing
+@app.get('/api/queue/list')
+def api_queue_list():
+    try:
+        limit = int(request.args.get('limit', '200'))
+    except Exception:
+        limit = 200
+    status = request.args.get('status')  # optional: pending|running|done
+    plugin = request.args.get('plugin')  # optional
+    if not DB_PATH.exists():
+        return jsonify({'items': []})
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    cur = con.cursor()
+    q = "select id, plugin, doc_id, status, created_at from jobs"
+    cond = []
+    args = []
+    if status:
+        cond.append("status=?"); args.append(status)
+    if plugin:
+        cond.append("plugin=?"); args.append(plugin)
+    if cond:
+        q += " where " + " and ".join(cond)
+    q += " order by id asc limit ?"; args.append(limit)
+    rows = [dict(r) for r in cur.execute(q, args).fetchall()]
+    con.close()
+    return jsonify({'items': rows})
+
+@app.post('/api/queue/clear')
+def api_queue_clear():
+    mode = (request.get_json(force=True, silent=True) or {}).get('mode') or 'non-done'
+    if not DB_PATH.exists():
+        return jsonify({'ok': True, 'cleared': 0, 'mode': mode})
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cleared = 0
+    try:
+        if mode == 'all':
+            cur.execute("delete from jobs"); cleared = cur.rowcount
+        elif mode == 'reset-running':
+            cur.execute("update jobs set status='pending' where status='running'"); cleared = cur.rowcount
+        elif mode == 'pending':
+            cur.execute("delete from jobs where status='pending'"); cleared = cur.rowcount
+        elif mode == 'non-done':
+            cur.execute("delete from jobs where status!='done'"); cleared = cur.rowcount
+        else:
+            return jsonify({'error':'unknown mode','mode':mode}), 400
+        con.commit()
+    finally:
+        con.close()
+    return jsonify({'ok': True, 'cleared': int(cleared), 'mode': mode})
 
