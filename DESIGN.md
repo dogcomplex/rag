@@ -1252,3 +1252,72 @@ for line in sys.stdin:
 * **Graph‑aware retrieval:** 1–2 hop neighbor packing, graph‑ranked reassembly.
 * **Re‑ranker:** tiny cross‑encoder for final ordering.
 * **PII:** enhanced detector (LLM‑assist + rules per region).
+
+---
+
+### Addendum: Implementation decisions and operations log (Windows + LM Studio)
+
+This addendum chronicles the practical design choices we made while hardening the Windows‑first GraphRAG starter into a dashboard‑driven pipeline.
+
+#### Runtime and platform
+- Default runtime: LM Studio (OpenAI‑compatible) on Windows 10 Pro; network base defaults to `http://127.0.0.1:12345/v1` with per‑plugin overrides.
+- vLLM considered for higher throughput; deferred due to Windows constraints (uvloop unsupported; HF weights required, not GGUF). Dashboard retains LM Studio defaults.
+- UTF‑8 and Windows console: advise `-X utf8`, `PYTHONIOENCODING`, and `chcp 65001` when needed.
+
+#### Data model and stores
+- Sidecar storage under `.knowledge/` (portable): indexes, graph, summaries, attributes, exports, queues, cache.
+- Vector index: hnswlib on non‑Windows; NumPy brute‑force fallback on Windows, persisted as `.npy` + `.meta.json`.
+- Graph: NetworkX with Louvain when available; communities saved to JSONL.
+
+#### Config and environment
+- `.env` and YAML configs merged at runtime with `${VAR}` expansion. Early `load_dotenv(override=True)` to ensure env is respected (fixes `${EMBED_MODEL}` issues).
+- `.knowledge/config/models.yml` gains `plugins:` block for per‑plugin LLM defaults:
+  - `llm`: `{ base_url, api_key, model, timeout }`
+  - `process_timeout`: per‑plugin subprocess wall‑clock limit.
+
+#### Ingestion, chunking, OCR/PDF
+- Multi‑repo ingest; domains derived from top‑level folders (e.g., `G:\LOKI\papers`).
+- Chunking policies tunable per type; input token pressure reduced by skeleton‑first flow.
+- PDF parsing via PyMuPDF (`fitz`) for text extraction on Windows.
+
+#### Attributes and enrichment
+- Attribute plugins are standalone scripts (stdin JSONL → stdout), outputs in `.knowledge/indexes/attributes/<plugin>/`.
+- Core set: `summary-20w`, `topic-tags`, `pii-scan` (regex), plus `glossary`, `requirements`, `todo-items`, `faq-pairs`.
+- New performance plugins:
+  - `doc-skeleton`: outline + ~100w + keyphrases snapshot per doc (token‑cheap intermediate).
+  - `multi-basic`: single LLM call emits multiple attributes (summary‑short/medium/outline, keyphrases, risk‑scan).
+- Existing plugins updated to prefer skeleton content when present, reducing input tokens.
+
+#### Queue, worker, robustness
+- Job queue migrated to SQLite with columns: `status`, `retries`, `completed_at`, `last_error`.
+- Dequeue ordering by `(retries asc, id asc)` to avoid starvation; “any pending plugin” worker mode added.
+- Error handling: timeouts/errors requeue (or mark failed for fatal issues like missing plugin).
+- Global in‑flight concurrency cap across workers via SQLite counters; configurable in dashboard.
+
+#### Dashboard (Flask + static HTML/JS)
+- `/api/status` with docs, coverage, queue, LLM health, workers.
+- Planner: enqueue plugins (single or list), optional JSON payload for per‑run overrides.
+- Ingest: start ingest for arbitrary repo path (multi‑domain).
+- Worker control: start/stop multiple workers, list active workers, set batch and max‑inflight.
+- Queue panel: filter/list items, clear queue modes (non‑done/pending/all, reset running → pending).
+- Coverage panel: summary rows with dropdowns per attribute → per‑doc previews and full JSON.
+- Documents panel: table with per‑doc dropdowns → per‑attribute full JSON.
+- Plugin defaults panel: Load/Save `plugins:` map to `.knowledge/config/models.yml` (per‑plugin model/timeout).
+- LLM cache panel: show/clear prompt‑level response cache.
+
+#### Retrieval and export
+- Hybrid retrieval (dense + BM25), community preface; monofile export with token budgeting and PII exclusion.
+- Graph export (GEXF/GraphML) for external tools; HTML report with D3 preview, communities section, and offline D3 fallback.
+
+#### Performance choices
+- Accept LM Studio statelessness; avoid repeated full‑doc prompts by:
+  - One‑shot macro plugin (`multi-basic`) per doc.
+  - Skeleton‑first flow and downstream plugins consuming the skeleton.
+  - Prompt‑level response caching keyed by `(model|max_tokens|temperature|prompt)`.
+  - Concurrency throttling (max‑inflight) to reduce timeouts and stabilize throughput.
+  - Reasonable per‑plugin HTTP timeouts and per‑process wall‑time limits (e.g., skeleton/multi‑basic larger than others).
+- Keep individual attributes runnable; treat `multi-basic` as a macro for convenience, not a replacement.
+
+#### Known limits and next steps
+- LM Studio parallelism is limited by model/runtime; increase throughput by reducing input tokens (skeleton), batching tasks, or migrating to vLLM (Linux) with HF weights and paged attention.
+- Optional: small reranker; richer entity/relationship extraction; better caching/incremental invalidation; dedicated model routing per attribute class via UI.

@@ -48,9 +48,10 @@ class _Evt(FileSystemEventHandler):
             plugins = attrs.get("plugins", [])
             for plugin in plugins:
                 _enqueue_job(self.cfg, plugin, record["doc_id"], payload={"path": str(p)})
+        # TODO: optionally enqueue ingest/graph rebuild jobs (separate scheduler handles embed/graph nightly)
 
 def watch_changes(repo_path: pathlib.Path, cfg):
-    ensure_dirs()
+    ensure_dirs(cfg)
     # ensure jobs db exists if auto-enqueue is enabled
     attrs = cfg.get("attributes", {})
     if attrs.get("auto_enqueue", False):
