@@ -16,7 +16,8 @@ for line in sys.stdin:
         continue
     doc_id = job.get('doc_id')
     overrides = (job.get('payload') or {}).get('llm') or {}
-    raw = chat(PROMPT.format(body=text), max_tokens=320, temperature=0.2, overrides=overrides)
+    # Qwen 32B has ~12k context; keep outputs compact
+    raw = chat(PROMPT.format(body=text), max_tokens=240, temperature=0.2, overrides=overrides, plugin_name='doc-skeleton')
     try:
         data = json.loads(raw)
     except Exception:

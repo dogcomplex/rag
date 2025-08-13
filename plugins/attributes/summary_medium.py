@@ -12,7 +12,7 @@ for line in sys.stdin:
     text = load_skeleton_text(job.get('doc_id')) or job.get('text','') or ''
     if not text.strip():
         continue
-    out = chat(PROMPT.format(body=text), max_tokens=380, temperature=0.2)
+    out = chat(PROMPT.format(body=text), max_tokens=380, temperature=0.2, plugin_name='summary-medium')
     (OUTDIR / f"{job['doc_id']}.json").write_text(json.dumps({
         'doc_id': job['doc_id'], 'attribute': 'summary-medium', 'value': out.strip(), 'confidence': 0.7
     }, ensure_ascii=False), encoding='utf-8')

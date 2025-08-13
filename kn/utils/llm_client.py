@@ -1,6 +1,7 @@
 import os, requests
 from dotenv import load_dotenv
 from .cache import get_cached_response, set_cached_response
+from kn.config import load_configs
 
 # Load .env, but don't override a process-level env already set
 load_dotenv(override=False)
@@ -12,8 +13,26 @@ def _settings(overrides: dict|None=None):
     timeout = (overrides or {}).get('timeout') or 120
     return base, key, model, timeout
 
-def chat(prompt: str, max_tokens=512, temperature=0.2, overrides: dict|None=None, cache_key: str|None=None):
-    BASE, KEY, MODEL, TIMEOUT = _settings(overrides)
+def _plugin_overrides(plugin_name: str|None) -> dict:
+    if not plugin_name:
+        return {}
+    try:
+        cfg = load_configs()
+        plug = (cfg.get('plugins') or {}).get(plugin_name) or {}
+        llm = plug.get('llm') or {}
+        return llm
+    except Exception:
+        return {}
+
+def chat(prompt: str, max_tokens=512, temperature=0.2, overrides: dict|None=None, cache_key: str|None=None, plugin_name: str|None=None):
+    merged = {}
+    # config defaults per plugin
+    cfg_over = _plugin_overrides(plugin_name)
+    merged.update(cfg_over)
+    # runtime overrides take precedence
+    if overrides:
+        merged.update(overrides)
+    BASE, KEY, MODEL, TIMEOUT = _settings(merged)
     url = f"{BASE}/chat/completions"
     headers = {'Authorization': f"Bearer {KEY}", 'Content-Type':'application/json'}
     payload = {

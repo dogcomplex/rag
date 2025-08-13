@@ -1,4 +1,5 @@
 import json, pathlib, threading, time, os, sqlite3, collections, datetime as dt, subprocess, sys
+import yaml
 from flask import Flask, send_from_directory, jsonify, request
 
 from kn.config import load_configs
@@ -168,6 +169,12 @@ def api_status():
     data['workers'] = workers
     if workers:
         data['worker'] = workers[0]
+    # plugin defaults snapshot
+    try:
+        cfg = load_configs()
+        data['plugin_defaults'] = cfg.get('plugins', {})
+    except Exception:
+        data['plugin_defaults'] = {}
     return jsonify(data)
 
 @app.post('/api/enqueue')
@@ -470,4 +477,71 @@ def api_queue_clear():
     finally:
         con.close()
     return jsonify({'ok': True, 'cleared': int(cleared), 'mode': mode})
+
+# Plugin defaults (persisted to .knowledge/config/models.yml under 'plugins')
+@app.get('/api/plugins/config')
+def api_plugins_get():
+    cfg = load_configs()
+    return jsonify({'plugins': cfg.get('plugins', {})})
+
+@app.post('/api/plugins/config')
+def api_plugins_set():
+    body = request.get_json(force=True) or {}
+    plugins_map = body.get('plugins') or {}
+    # persist to models.yml
+    cfg_dir = pathlib.Path(load_configs().get('_root', '.knowledge')) / 'config'
+    models_yml = cfg_dir / 'models.yml'
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    current = {}
+    if models_yml.exists():
+        try:
+            current = yaml.safe_load(models_yml.read_text(encoding='utf-8')) or {}
+        except Exception:
+            current = {}
+    current['plugins'] = plugins_map
+    models_yml.write_text(yaml.safe_dump(current, sort_keys=False, allow_unicode=True), encoding='utf-8')
+    return jsonify({'ok': True})
+
+# Cache management
+CACHE_DIR = pathlib.Path('.knowledge/cache/llm')
+
+@app.get('/api/cache/llm/stats')
+def api_cache_stats():
+    total = 0; count = 0
+    if CACHE_DIR.exists():
+        for p in CACHE_DIR.glob('*.json'):
+            try:
+                total += p.stat().st_size
+                count += 1
+            except Exception:
+                continue
+    return jsonify({'count': count, 'total_bytes': total})
+
+@app.get('/api/cache/llm/list')
+def api_cache_list():
+    try:
+        limit = int(request.args.get('limit', '200'))
+    except Exception:
+        limit = 200
+    items = []
+    if CACHE_DIR.exists():
+        files = sorted(CACHE_DIR.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in files[:limit]:
+            try:
+                st = p.stat()
+                items.append({'name': p.name, 'size': st.st_size, 'mtime': dt.datetime.fromtimestamp(st.st_mtime).isoformat(sep=' ')})
+            except Exception:
+                continue
+    return jsonify({'items': items})
+
+@app.post('/api/cache/llm/clear')
+def api_cache_clear():
+    cleared = 0
+    if CACHE_DIR.exists():
+        for p in CACHE_DIR.glob('*.json'):
+            try:
+                p.unlink(); cleared += 1
+            except Exception:
+                continue
+    return jsonify({'ok': True, 'cleared': cleared})
 

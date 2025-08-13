@@ -16,7 +16,7 @@ for line in sys.stdin:
     text = load_skeleton_text(job.get('doc_id')) or job.get('text','') or ''
     if not text.strip():
         continue
-    raw = chat(PROMPT.format(body=text), max_tokens=160, temperature=0.1)
+    raw = chat(PROMPT.format(body=text), max_tokens=160, temperature=0.1, plugin_name='risk-scan')
     # best-effort JSON parse; if fails, wrap as notes
     try:
         data = json.loads(raw)

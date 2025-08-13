@@ -93,6 +93,8 @@
         <input id="worker_plugins" value="*" style="flex:1" />
         <label>batch</label>
         <input id="worker_batch" type="number" value="32" style="width:90px" />
+        <label>max-inflight</label>
+        <input id="worker_max_inflight" type="number" value="2" style="width:90px" />
       </div>
       <div class="row">
         <button class="btn" onclick="startWorker()">Start Worker</button>
@@ -105,6 +107,17 @@
       <h3>Status</h3>
       <div id="llm"></div>
       <div class="grid" id="queue"></div>
+      <details style="margin:8px 0;">
+        <summary><b>Plugin defaults</b> <small>(per-plugin model/timeout)</small></summary>
+        <div class="row" style="margin:6px 0;">
+          <button class="btn" onclick="loadPluginDefaults()">Load</button>
+          <span><small>Use JSON: { "summary-short": { "llm": { "model": "qwen2.5-7b-instruct", "timeout": 60 } } }</small></span>
+        </div>
+        <textarea id="plugin_defaults_json" style="width:100%;height:120px"></textarea>
+        <div class="row" style="margin-top:6px;">
+          <button class="btn" onclick="savePluginDefaults()">Save</button>
+        </div>
+      </details>
       <details style="margin:8px 0;">
         <summary><b>Queue listing</b> <small>(ordered by id asc)</small></summary>
         <div class="row" style="margin:6px 0;">
@@ -121,6 +134,21 @@
           <button class="btn" onclick="clearQueue()">Clear Queue</button>
         </div>
         <div id="queue_list" style="max-height:240px; overflow:auto; border:1px solid #eee; border-radius:6px; padding:6px;"></div>
+      </details>
+      <details style="margin:8px 0;">
+        <summary><b>LLM cache</b> <small>(prompt-level)</small></summary>
+        <div class="row" style="margin:6px 0;">
+          <button class="btn" onclick="loadCacheStats()">Refresh</button>
+          <div id="cache_stats" style="margin-left:8px"></div>
+          <span style="flex:1"></span>
+          <button class="btn" onclick="clearCache()">Clear cache</button>
+        </div>
+        <div class="row" style="margin:6px 0;">
+          <label>Show</label>
+          <input id="cache_limit" type="number" value="200" style="width:90px" />
+          <button class="btn" onclick="loadCacheList()">List</button>
+        </div>
+        <div id="cache_list" style="max-height:240px; overflow:auto; border:1px solid #eee; border-radius:6px; padding:6px;"></div>
       </details>
       <div class="row" style="justify-content:space-between;align-items:center;">
         <h3>Attributes Coverage</h3>
@@ -194,7 +222,8 @@
     async function startWorker(){
       const plugins = (document.getElementById('worker_plugins').value||'').split(',').map(s=>s.trim()).filter(Boolean);
       const batch = parseInt(document.getElementById('worker_batch').value||'32');
-      await fetch('/api/worker/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({plugins, batch})});
+      const max_inflight = parseInt(document.getElementById('worker_max_inflight').value||'2');
+      await fetch('/api/worker/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({plugins, batch, max_inflight})});
       await refresh();
     }
     async function stopWorkerAll(){
@@ -229,6 +258,9 @@
       if(document.getElementById('queue_list').getAttribute('data-has')==='1'){
         loadQueueList(true);
       }
+      // auto refresh plugin defaults snapshot
+      // (non-intrusive; we only auto-load once)
+      if(!window.__PLUGINS_LOADED__){ loadPluginDefaults(); window.__PLUGINS_LOADED__=true; }
 
       renderCoverage(data);
 
@@ -288,6 +320,35 @@
       await fetch('/api/queue/clear', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode})});
       await loadQueueList(true);
       await refresh();
+    }
+    async function loadPluginDefaults(){
+      const r = await fetch('/api/plugins/config');
+      const data = await r.json();
+      document.getElementById('plugin_defaults_json').value = JSON.stringify(data.plugins||{}, null, 2);
+    }
+    async function savePluginDefaults(){
+      const txt = document.getElementById('plugin_defaults_json').value||'{}';
+      let obj={}; try{ obj = JSON.parse(txt);}catch(e){ alert('Invalid JSON'); return; }
+      await fetch('/api/plugins/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({plugins: obj})});
+      await refresh();
+    }
+    async function loadCacheStats(){
+      const r = await fetch('/api/cache/llm/stats');
+      const data = await r.json();
+      document.getElementById('cache_stats').innerText = `entries: ${data.count||0}, size: ${data.total_bytes||0} bytes`;
+    }
+    async function loadCacheList(){
+      const limit = parseInt(document.getElementById('cache_limit').value||'200');
+      const r = await fetch('/api/cache/llm/list?limit=' + limit);
+      const data = await r.json();
+      const items = data.items||[];
+      document.getElementById('cache_list').innerHTML = '<table><thead><tr><th>Name</th><th>Size</th><th>MTime</th></tr></thead><tbody>' +
+        items.map(i=>`<tr><td>${i.name}</td><td>${i.size}</td><td>${i.mtime}</td></tr>`).join('') + '</tbody></table>';
+    }
+    async function clearCache(){
+      await fetch('/api/cache/llm/clear', {method:'POST'});
+      await loadCacheStats();
+      document.getElementById('cache_list').innerHTML='';
     }
     function renderCoverage(data){
       const cov = data.attributes_coverage||{};

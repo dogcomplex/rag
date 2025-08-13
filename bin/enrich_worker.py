@@ -1,6 +1,6 @@
 import argparse, time
 from kn.config import load_configs
-from kn.jobs_sqlite import ensure_db, dequeue_batch, ack_job, iter_docs_for_jobs, fail_and_requeue_job, list_pending_plugins
+from kn.jobs_sqlite import ensure_db, dequeue_batch, ack_job, iter_docs_for_jobs, fail_and_requeue_job, list_pending_plugins, try_acquire, release, set_limit
 
 def run_once(plugins, cfg, batch_size=16):
     ensure_db(cfg)
@@ -21,6 +21,10 @@ def run_once(plugins, cfg, batch_size=16):
     for j in jobs:
         by_plugin.setdefault(j["plugin"], []).append(j)
     for plugin, items in by_plugin.items():
+        # global concurrency cap
+        if not try_acquire(cfg, 'llm_concurrency'):
+            # can't acquire slot, skip this plugin batch this round
+            continue
         fs_name = plugin.replace('-', '_')
         pypath = pathlib.Path(f"plugins/attributes/{fs_name}.py")
         if not pypath.exists():
@@ -43,8 +47,13 @@ def run_once(plugins, cfg, batch_size=16):
                 fail_and_requeue_job(cfg, j["id"], error_message="no input doc", back_to_pending=False)
             continue
         try:
+            # per-plugin process timeout (seconds)
+            pcfg = (cfg.get('plugins') or {}).get(plugin) or {}
+            proc_timeout = pcfg.get('process_timeout') if isinstance(pcfg, dict) else None
+            if not isinstance(proc_timeout, (int, float)):
+                proc_timeout = 600 if plugin in ('multi-basic','doc-skeleton') else 300
             proc = subprocess.Popen([sys.executable, str(pypath)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-            out, _ = proc.communicate("\n".join(inp_lines), timeout=300)
+            out, _ = proc.communicate("\n".join(inp_lines), timeout=proc_timeout)
             print(f"[enrich] {plugin}: {len(items)} docs processed")
             for j in items:
                 ack_job(cfg, j["id"])
@@ -57,6 +66,8 @@ def run_once(plugins, cfg, batch_size=16):
             print(f"[enrich] {plugin}: error {msg}")
             for j in items:
                 fail_and_requeue_job(cfg, j["id"], error_message=msg, back_to_pending=True)
+        finally:
+            release(cfg, 'llm_concurrency')
     return len(jobs)
 
 if __name__ == "__main__":
@@ -65,10 +76,13 @@ if __name__ == "__main__":
     ap.add_argument("--watch", action="store_true")
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--any-pending", action="store_true", dest="any_pending")
+    ap.add_argument("--max-inflight", type=int, default=2, help="global concurrent LLM calls across workers")
     args = ap.parse_args()
     cfg = load_configs()
     plugins = [p.strip() for p in args.plugins.split(",") if p.strip()]
     any_pending = args.any_pending or (len(plugins)==1 and plugins[0] in ("*","any"))
+    # set concurrency limit at start
+    set_limit(cfg, 'llm_concurrency', max(1, int(args.max_inflight)))
     while True:
         use_plugins = plugins
         if any_pending:
