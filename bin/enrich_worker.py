@@ -16,6 +16,15 @@ def run_once(plugins, cfg, batch_size=16):
         if not jobs:
             return 0
     docs = iter_docs_for_jobs(jobs)
+    def _load_chunk_by_id(chunk_id: str):
+        import json as _json, pathlib as _pathlib
+        p = _pathlib.Path('.knowledge/indexes/chunks')/f"{chunk_id}.json"
+        if p.exists():
+            try:
+                return _json.loads(p.read_text(encoding='utf-8'))
+            except Exception:
+                return None
+        return None
     import subprocess, json, pathlib, sys
     by_plugin = {}
     for j in jobs:
@@ -35,9 +44,13 @@ def run_once(plugins, cfg, batch_size=16):
         inp_lines = []
         id_order = []
         for j in items:
-            doc = docs.get(j["doc_id"])
+            payload = j.get("payload") or {}
+            doc = None
+            if payload.get('chunk_id'):
+                doc = _load_chunk_by_id(payload['chunk_id'])
+            if doc is None:
+                doc = docs.get(j["doc_id"])  # fallback
             if doc:
-                payload = j.get("payload") or {}
                 merged = dict(doc)
                 merged["payload"] = payload
                 inp_lines.append(json.dumps(merged, ensure_ascii=False))

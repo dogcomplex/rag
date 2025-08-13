@@ -123,18 +123,31 @@ def _db_summary(minutes_recent=60):
         con.close()
     return out
 
-def _llm_health():
+LLM_MODELS_CACHE = {'data': None, 'ts': 0}
+
+def _llm_health(force: bool=False, ttl_sec: int=600):
     from dotenv import load_dotenv
     import requests
     load_dotenv(override=False)
     base = os.getenv('OPENAI_BASE_URL') or 'http://127.0.0.1:12345/v1'
+    now = time.time()
+    if not force and LLM_MODELS_CACHE['data'] and (now - LLM_MODELS_CACHE['ts'] < ttl_sec):
+        d = dict(LLM_MODELS_CACHE['data'])
+        d['endpoint'] = base
+        return d
     try:
         r = requests.get(base.rstrip('/') + '/models', timeout=5)
         ok = r.status_code == 200
         models = r.json().get('data', []) if ok else []
-        return {'reachable': ok, 'endpoint': base, 'models': [m.get('id') for m in models[:5]]}
+        data = {'reachable': ok, 'endpoint': base, 'models': [m.get('id') for m in models[:5]]}
+        LLM_MODELS_CACHE['data'] = data
+        LLM_MODELS_CACHE['ts'] = now
+        return data
     except Exception:
-        return {'reachable': False, 'endpoint': base, 'models': []}
+        data = {'reachable': False, 'endpoint': base, 'models': []}
+        LLM_MODELS_CACHE['data'] = data
+        LLM_MODELS_CACHE['ts'] = now
+        return data
 
 def _read_jobs_status():
     plugins = ['summary-20w','topic-tags','pii-scan','glossary','requirements','todo-items','faq-pairs',
@@ -152,6 +165,7 @@ def _read_jobs_status():
 
 @app.get('/api/status')
 def api_status():
+    force_models = bool(request.args.get('force_models'))
     data = _read_jobs_status()
     workers = []
     for wid, w in WORKERS.items():
@@ -175,6 +189,8 @@ def api_status():
         data['plugin_defaults'] = cfg.get('plugins', {})
     except Exception:
         data['plugin_defaults'] = {}
+    # refresh llm section with cache control
+    data['llm'] = _llm_health(force=force_models)
     return jsonify(data)
 
 @app.post('/api/enqueue')
@@ -206,6 +222,8 @@ def api_plan():
         cmd += ['--changed-since-min', str(args['changed_since_min'])]
     if args.get('summaries_modes'):
         cmd += ['--summaries-modes', ','.join(args['summaries_modes'])]
+    if args.get('map_reduce'):
+        cmd += ['--map-reduce']
     env = os.environ.copy(); env['PYTHONPATH'] = str(pathlib.Path.cwd())
     subprocess.run(cmd, env=env)
     return jsonify({'ok': True})

@@ -36,6 +36,7 @@ def main():
     ap.add_argument('--changed-since-min', type=int, default=0, help='only enqueue docs whose chunks changed in last N minutes (0 = ignore)')
     ap.add_argument('--summaries-modes', default='short,medium', help='for plugin "summaries", comma list of modes (short,medium,long,outline)')
     ap.add_argument('--payload-json', default=None, help='optional JSON to attach as payload to each job (e.g., {"llm":{"model":"qwen2.5-7b-instruct","timeout":60}})')
+    ap.add_argument('--map-reduce', action='store_true', help='enqueue chunk map (chunk-summary) then doc reduce (doc-reduce)')
     args = ap.parse_args()
 
     cfg = load_configs()
@@ -66,6 +67,18 @@ def main():
             else:
                 enqueue(cfg, plugin, doc_id, payload=base_payload)
                 count += 1
+        if args.map_reduce:
+            # enqueue chunk map jobs for all chunks of this doc, then doc reduce
+            from pathlib import Path
+            cdir = Path('.knowledge/indexes/chunks')
+            chunks = sorted(cdir.glob(f"{doc_id}-*.json"))
+            for cp in chunks:
+                chk_id = cp.stem
+                pl = dict(base_payload); pl['chunk_id'] = chk_id
+                enqueue(cfg, 'chunk-summary', doc_id, payload=pl)
+                count += 1
+            enqueue(cfg, 'doc-reduce', doc_id, payload=base_payload)
+            count += 1
             if args.limit and count >= args.limit:
                 print(f"[plan] enqueued {count} jobs (limit reached)")
                 return

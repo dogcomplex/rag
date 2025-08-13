@@ -64,6 +64,7 @@
         <input id="changed_min" type="number" min="0" value="0" style="width:100px" />
         <label>Limit</label>
         <input id="limit" type="number" min="0" value="0" style="width:100px" />
+        <label><input id="map_reduce" type="checkbox" /> map-reduce</label>
       </div>
       <div class="row">
         <label><input id="only_missing" type="checkbox" checked /> only-missing</label>
@@ -192,7 +193,8 @@
         plugins,
         only_missing: document.getElementById('only_missing').checked,
         changed_since_min: parseInt(document.getElementById('changed_min').value||'0'),
-        limit: parseInt(document.getElementById('limit').value||'0')
+        limit: parseInt(document.getElementById('limit').value||'0'),
+        map_reduce: document.getElementById('map_reduce').checked
       };
       const pjson = document.getElementById('payload_json').value||'';
       if(pjson){ payload.payload_json = pjson; }

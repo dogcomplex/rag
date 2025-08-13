@@ -10,7 +10,7 @@ try:
 except Exception:
     fitz = None
 ROOT = pathlib.Path('.knowledge')
-def ensure_dirs():
+def ensure_dirs(cfg=None):
     (ROOT/"indexes"/"chunks").mkdir(parents=True, exist_ok=True)
     (ROOT/"indexes"/"embeddings").mkdir(parents=True, exist_ok=True)
     (ROOT/"indexes"/"graph").mkdir(parents=True, exist_ok=True)

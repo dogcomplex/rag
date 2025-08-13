@@ -1,5 +1,6 @@
 import sys, json, pathlib
 from kn.utils.llm_client import chat
+from kn.utils.skeleton import load_skeleton_text
 
 OUT = pathlib.Path('.knowledge/indexes/attributes')
 OUT.mkdir(parents=True, exist_ok=True)
@@ -18,7 +19,7 @@ def write_attr(attr, doc_id, value, extra=None):
 
 for line in sys.stdin:
     job = json.loads(line)
-    text = job.get('text','') or ''
+    text = load_skeleton_text(job.get('doc_id')) or job.get('text','') or ''
     if not text.strip():
         continue
     doc_id = job.get('doc_id')
