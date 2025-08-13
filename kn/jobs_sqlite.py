@@ -38,7 +38,7 @@ def dequeue_batch(cfg, wanted_plugins, limit=16):
     cur.execute(f"""
       SELECT id, plugin, doc_id, payload FROM jobs
       WHERE status='pending' AND plugin IN ({qmarks})
-      ORDER BY id ASC LIMIT ?
+      ORDER BY COALESCE(retries,0) ASC, id ASC LIMIT ?
     """, (*wanted_plugins, limit))
     rows = cur.fetchall(); ids = [r[0] for r in rows]
     if ids:
@@ -56,6 +56,12 @@ def fail_and_requeue_job(cfg, job_id: int, error_message: str|None=None, back_to
     else:
         con.execute("UPDATE jobs SET status='failed', retries=coalesce(retries,0)+1, last_error=? WHERE id=?", (error_message, job_id))
     con.commit(); con.close()
+
+def list_pending_plugins(cfg):
+    con = sqlite3.connect(_db_path(cfg))
+    rows = [r[0] for r in con.execute("select distinct plugin from jobs where status='pending'").fetchall()]
+    con.close()
+    return rows
 def iter_docs_for_jobs(jobs):
     from pathlib import Path
     cdir = Path('.knowledge/indexes/chunks'); out = {}

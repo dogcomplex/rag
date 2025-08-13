@@ -1,12 +1,20 @@
 import argparse, time
 from kn.config import load_configs
-from kn.jobs_sqlite import ensure_db, dequeue_batch, ack_job, iter_docs_for_jobs, fail_and_requeue_job
+from kn.jobs_sqlite import ensure_db, dequeue_batch, ack_job, iter_docs_for_jobs, fail_and_requeue_job, list_pending_plugins
 
 def run_once(plugins, cfg, batch_size=16):
     ensure_db(cfg)
+    # If no jobs for requested plugins, peek pending list and suggest available
     jobs = dequeue_batch(cfg, wanted_plugins=plugins, limit=batch_size)
     if not jobs:
-        return 0
+        # try to broaden to any pending plugins if requested plugins empty
+        pend = list_pending_plugins(cfg)
+        avail = [p for p in pend if p in plugins]
+        if not avail:
+            return 0
+        jobs = dequeue_batch(cfg, wanted_plugins=avail, limit=batch_size)
+        if not jobs:
+            return 0
     docs = iter_docs_for_jobs(jobs)
     import subprocess, json, pathlib, sys
     by_plugin = {}
@@ -53,14 +61,20 @@ def run_once(plugins, cfg, batch_size=16):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--plugins", required=True, help="comma-separated plugin names")
+    ap.add_argument("--plugins", required=True, help="comma-separated plugin names or '*' for any pending")
     ap.add_argument("--watch", action="store_true")
     ap.add_argument("--batch", type=int, default=16)
+    ap.add_argument("--any-pending", action="store_true", dest="any_pending")
     args = ap.parse_args()
     cfg = load_configs()
     plugins = [p.strip() for p in args.plugins.split(",") if p.strip()]
+    any_pending = args.any_pending or (len(plugins)==1 and plugins[0] in ("*","any"))
     while True:
-        n = run_once(plugins, cfg, batch_size=args.batch)
+        use_plugins = plugins
+        if any_pending:
+            dyn = list_pending_plugins(cfg)
+            use_plugins = dyn if dyn else []
+        n = run_once(use_plugins, cfg, batch_size=args.batch)
         if not args.watch:
             break
         if n == 0:

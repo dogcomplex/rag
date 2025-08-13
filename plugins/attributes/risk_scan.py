@@ -1,5 +1,6 @@
 import sys, json, pathlib
 from kn.utils.llm_client import chat
+from kn.utils.skeleton import load_skeleton_text
 
 OUTDIR = pathlib.Path('.knowledge/indexes/attributes/risk-scan')
 OUTDIR.mkdir(parents=True, exist_ok=True)
@@ -12,7 +13,7 @@ PROMPT = (
 
 for line in sys.stdin:
     job = json.loads(line)
-    text = job.get('text','') or ''
+    text = load_skeleton_text(job.get('doc_id')) or job.get('text','') or ''
     if not text.strip():
         continue
     raw = chat(PROMPT.format(body=text), max_tokens=160, temperature=0.1)

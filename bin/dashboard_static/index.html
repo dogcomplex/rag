@@ -36,6 +36,8 @@
       <div class="row" style="margin-bottom:8px;">
         <label>Plugins</label>
         <select id="plugins" multiple size="10" style="width:100%">
+          <option value="multi-basic">multi-basic (batch)</option>
+          <option value="doc-skeleton">doc-skeleton</option>
           <option value="summary-20w">summary-20w</option>
           <option value="summary-short">summary-short</option>
           <option value="summary-medium">summary-medium</option>
@@ -52,6 +54,10 @@
           <option value="recent-summary">recent-summary</option>
           <option value="pii-scan">pii-scan</option>
         </select>
+      </div>
+      <div class="row" style="margin-bottom:8px;">
+        <label>Payload JSON</label>
+        <input id="payload_json" placeholder='{"llm":{"model":"qwen2.5-7b-instruct","timeout":60}}' style="flex:1" />
       </div>
       <div class="row" style="margin-bottom:8px;">
         <label>Changed since (min)</label>
@@ -84,7 +90,7 @@
       <hr/>
       <h3>Worker</h3>
       <div class="row" style="margin-bottom:8px;">
-        <input id="worker_plugins" value="summary-short,summary-medium,summary-long,summary-outline,keyphrases,bridge-candidates,risk-scan,recent-summary" style="flex:1" />
+        <input id="worker_plugins" value="*" style="flex:1" />
         <label>batch</label>
         <input id="worker_batch" type="number" value="32" style="width:90px" />
       </div>
@@ -160,6 +166,8 @@
         changed_since_min: parseInt(document.getElementById('changed_min').value||'0'),
         limit: parseInt(document.getElementById('limit').value||'0')
       };
+      const pjson = document.getElementById('payload_json').value||'';
+      if(pjson){ payload.payload_json = pjson; }
       await fetch('/api/plan', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
       await refresh();
     }

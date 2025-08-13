@@ -35,12 +35,17 @@ def main():
     ap.add_argument('--only-missing', action='store_true', help='enqueue only if attribute output file missing')
     ap.add_argument('--changed-since-min', type=int, default=0, help='only enqueue docs whose chunks changed in last N minutes (0 = ignore)')
     ap.add_argument('--summaries-modes', default='short,medium', help='for plugin "summaries", comma list of modes (short,medium,long,outline)')
+    ap.add_argument('--payload-json', default=None, help='optional JSON to attach as payload to each job (e.g., {"llm":{"model":"qwen2.5-7b-instruct","timeout":60}})')
     args = ap.parse_args()
 
     cfg = load_configs()
     ensure_db(cfg)
     plugins = [p.strip() for p in args.plugins.split(',') if p.strip()]
     sum_modes = [m.strip() for m in args.summaries_modes.split(',') if m.strip()] if 'summaries' in plugins else []
+    try:
+        base_payload = json.loads(args.payload_json) if args.payload_json else {}
+    except Exception:
+        base_payload = {}
 
     cutoff = None
     if args.changed_since_min and args.changed_since_min > 0:
@@ -55,10 +60,11 @@ def main():
                 continue
             if plugin == 'summaries' and sum_modes:
                 for mode in sum_modes:
-                    enqueue(cfg, plugin, doc_id, payload={'mode': mode})
+                    pl = dict(base_payload); pl['mode'] = mode
+                    enqueue(cfg, plugin, doc_id, payload=pl)
                     count += 1
             else:
-                enqueue(cfg, plugin, doc_id, payload={})
+                enqueue(cfg, plugin, doc_id, payload=base_payload)
                 count += 1
             if args.limit and count >= args.limit:
                 print(f"[plan] enqueued {count} jobs (limit reached)")
