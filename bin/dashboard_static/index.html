@@ -453,6 +453,8 @@
     window.__DOC_OPEN__ = window.__DOC_OPEN__ || new Set();
     window.__DOC_ATTR_OPEN__ = window.__DOC_ATTR_OPEN__ || {}; // doc_id -> Set(plugin)
     window.__DOC_META__ = window.__DOC_META__ || {}; // doc_id -> {meta, attributes}
+    window.__DOC_CHUNK_ATTR_OPEN__ = window.__DOC_CHUNK_ATTR_OPEN__ || {}; // doc_id -> Set(chunk-plugin)
+    window.__CHUNK_ATTR_CACHE__ = window.__CHUNK_ATTR_CACHE__ || {}; // key: chunks|plugin|doc_id -> items
 
     async function loadDocs(){
       const r = await fetch('/api/docs');
@@ -487,6 +489,15 @@
               + `</tr>`);
             rows.push(`<tr id=\"doc_attr_full_${d.doc_id}_${plug}\" style=\"display:${attrOpen?'':'none'};\"><td></td><td colspan=3><pre style=\"white-space:pre-wrap;background:#f6f6f6;padding:8px;border-radius:6px;\" id=\"doc_attr_pre_${d.doc_id}_${plug}\"></pre></td></tr>`);
           }
+          // Chunk-level attributes (currently exposing chunk-summary)
+          const cplug = 'chunk-summary';
+          const cOpen = (window.__DOC_CHUNK_ATTR_OPEN__[d.doc_id]||new Set()).has(cplug);
+          rows.push(`<tr onclick=\"toggleDocChunkAttr(event,'${d.doc_id}','${cplug}')\" style=\"cursor:pointer;\">`
+            + `<td></td>`
+            + `<td colspan=2><span id=\"doc_chunk_attr_arrow_${d.doc_id}_${cplug}\">${cOpen?'▾':'›'}</span> ${cplug} <span style=\"opacity:.65;\">(per-chunk)</span></td>`
+            + `<td></td>`
+            + `</tr>`);
+          rows.push(`<tr id=\"doc_chunk_attr_full_${d.doc_id}_${cplug}\" style=\"display:${cOpen?'':'none'};\"><td></td><td colspan=3><div style=\"background:#f6f6f6;padding:8px;border-radius:6px;max-height:260px;overflow:auto;\" id=\"doc_chunk_attr_div_${d.doc_id}_${cplug}\"></div></td></tr>`);
         }
       });
       rows.push('</tbody></table>');
@@ -529,6 +540,47 @@
       const row = document.getElementById(`doc_attr_full_${doc_id}_${plug}`);
       const arrow = document.getElementById(`doc_attr_arrow_${doc_id}_${plug}`);
       if(pre){ pre.textContent = JSON.stringify(window.__ATTR_ITEM_CACHE__[key], null, 2); }
+      if(row){ row.style.display = ''; }
+      if(arrow){ arrow.textContent = '▾'; }
+    }
+
+    async function toggleDocChunkAttr(evt, doc_id, plug){
+      evt.stopPropagation();
+      const set = (window.__DOC_CHUNK_ATTR_OPEN__[doc_id] = window.__DOC_CHUNK_ATTR_OPEN__[doc_id] || new Set());
+      const key = `chunks|${plug}|${doc_id}`;
+      if(set.has(plug)){
+        set.delete(plug);
+        const row = document.getElementById(`doc_chunk_attr_full_${doc_id}_${plug}`);
+        const arrow = document.getElementById(`doc_chunk_attr_arrow_${doc_id}_${plug}`);
+        if(row){ row.style.display = 'none'; }
+        if(arrow){ arrow.textContent = '›'; }
+        return;
+      }
+      set.add(plug);
+      if(window.__CHUNK_ATTR_CACHE__[key] == null){
+        const r = await fetch(`/api/doc/${doc_id}/chunks/attr/${plug}`);
+        const data = await r.json();
+        window.__CHUNK_ATTR_CACHE__[key] = (data.items||[]);
+      }
+      const items = window.__CHUNK_ATTR_CACHE__[key] || [];
+      const div = document.getElementById(`doc_chunk_attr_div_${doc_id}_${plug}`);
+      const row = document.getElementById(`doc_chunk_attr_full_${doc_id}_${plug}`);
+      const arrow = document.getElementById(`doc_chunk_attr_arrow_${doc_id}_${plug}`);
+      if(div){
+        if(items.length === 0){
+          div.innerHTML = '<em style="opacity:.75;">No items</em>';
+        } else {
+          const lines = ['<table style="width:100%;"><thead><tr><th style="width:64px;">Seq</th><th style="width:320px;">Chunk</th><th>Preview</th></tr></thead><tbody>'];
+          for(const it of items){
+            const seq = (it.seq == null ? '' : it.seq);
+            const chunk = it.chunk_id || '';
+            const prev = escapeHtml(it.preview||'');
+            lines.push(`<tr><td class=mono>${seq}</td><td class=mono style="word-break:break-all;">${chunk}</td><td>${prev}</td></tr>`);
+          }
+          lines.push('</tbody></table>');
+          div.innerHTML = lines.join('');
+        }
+      }
       if(row){ row.style.display = ''; }
       if(arrow){ arrow.textContent = '▾'; }
     }

@@ -405,6 +405,47 @@ def api_doc_attr(doc_id, plugin):
         data = {'raw': p.read_text(errors='ignore')}
     return jsonify({'item': data})
 
+# Chunk-level attributes per document
+def _list_chunk_attrs_for_doc(doc_id: str, plugin: str):
+    items = []
+    pdir = ATTR_DIR / plugin
+    if not pdir.exists():
+        return []
+    for f in sorted(pdir.glob('*.json')):
+        try:
+            data = json.loads(f.read_text(encoding='utf-8'))
+        except Exception:
+            continue
+        if data.get('doc_id') != doc_id:
+            continue
+        chunk_id = data.get('chunk_id')
+        seq = None
+        try:
+            if chunk_id:
+                cpath = CHUNKS_DIR / f"{chunk_id}.json"
+                if cpath.exists():
+                    crec = json.loads(cpath.read_text(encoding='utf-8'))
+                    seq = ((crec.get('meta') or {}).get('seq'))
+        except Exception:
+            pass
+        val = data.get('value')
+        preview = None
+        if isinstance(val, str):
+            preview = val.strip().replace('\n',' ')[:200]
+        items.append({'chunk_id': chunk_id, 'seq': seq, 'path': str(f), 'preview': preview})
+    # order by seq when available, else by chunk_id
+    def _key(it):
+        if isinstance(it.get('seq'), int):
+            return (0, it['seq'])
+        return (1, str(it.get('chunk_id') or ''))
+    items.sort(key=_key)
+    return items
+
+@app.get('/api/doc/<doc_id>/chunks/attr/<plugin>')
+def api_doc_chunk_attrs(doc_id, plugin):
+    items = _list_chunk_attrs_for_doc(doc_id, plugin)
+    return jsonify({'doc_id': doc_id, 'plugin': plugin, 'items': items})
+
 # Serve existing report (if present) under /report
 REPORT_DIR = ROOT / 'exports' / 'reports'
 
