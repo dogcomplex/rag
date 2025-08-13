@@ -125,7 +125,7 @@ def _llm_health():
     from dotenv import load_dotenv
     import requests
     load_dotenv(override=False)
-    base = os.getenv('OPENAI_BASE_URL', 'http://localhost:1234/v1')
+    base = os.getenv('OPENAI_BASE_URL') or 'http://127.0.0.1:12345/v1'
     try:
         r = requests.get(base.rstrip('/') + '/models', timeout=5)
         ok = r.status_code == 200
@@ -136,7 +136,8 @@ def _llm_health():
 
 def _read_jobs_status():
     plugins = ['summary-20w','topic-tags','pii-scan','glossary','requirements','todo-items','faq-pairs',
-               'keyphrases','bridge-candidates','risk-scan','recent-summary','summaries']
+               'keyphrases','bridge-candidates','risk-scan','recent-summary',
+               'summary-short','summary-medium','summary-long','summary-outline']
     doc_ids = _unique_doc_ids()
     data = {
         'docs_total': len(doc_ids),
@@ -243,4 +244,91 @@ def run(host='0.0.0.0', port=5051):
 
 if __name__ == '__main__':
     run()
+
+# --------------
+# Document + attribute browsing APIs
+# --------------
+
+def _first_chunk_for_doc(doc_id: str):
+    for p in CHUNKS_DIR.glob(f"{doc_id}-*.json"):
+        try:
+            return json.loads(p.read_text(encoding='utf-8'))
+        except Exception:
+            continue
+    return None
+
+@app.get('/api/docs')
+def api_docs():
+    docs = []
+    for d in sorted(_unique_doc_ids()):
+        rec = _first_chunk_for_doc(d) or {}
+        meta = rec.get('meta') or {}
+        docs.append({'doc_id': d, 'domain': meta.get('domain','root'), 'path': meta.get('path','')})
+    return jsonify({'docs': docs})
+
+def _attr_paths_for_doc(doc_id: str):
+    out = {}
+    if ATTR_DIR.exists():
+        for plugin_dir in ATTR_DIR.iterdir():
+            if not plugin_dir.is_dir():
+                continue
+            if plugin_dir.name == 'summaries':
+                modes = []
+                for f in plugin_dir.glob(f"{doc_id}_*.json"):
+                    try:
+                        mode = f.stem.split('_', 1)[1]
+                        modes.append({'mode': mode, 'path': str(f)})
+                    except Exception:
+                        continue
+                if modes:
+                    out['summaries'] = modes
+            else:
+                f = plugin_dir / f"{doc_id}.json"
+                if f.exists():
+                    out[plugin_dir.name] = {'path': str(f)}
+    return out
+
+@app.get('/api/doc/<doc_id>')
+def api_doc(doc_id):
+    rec = _first_chunk_for_doc(doc_id) or {}
+    meta = rec.get('meta') or {}
+    attrs = _attr_paths_for_doc(doc_id)
+    return jsonify({'doc_id': doc_id, 'meta': meta, 'attributes': attrs})
+
+@app.get('/api/doc/<doc_id>/attr/<plugin>')
+def api_doc_attr(doc_id, plugin):
+    if plugin == 'summaries':
+        pdir = ATTR_DIR / 'summaries'
+        items = []
+        for f in sorted(pdir.glob(f"{doc_id}_*.json")):
+            try:
+                data = json.loads(f.read_text(encoding='utf-8'))
+                items.append(data)
+            except Exception:
+                continue
+        return jsonify({'items': items})
+    p = ATTR_DIR / plugin / f"{doc_id}.json"
+    if not p.exists():
+        return jsonify({'error':'not found'}), 404
+    try:
+        data = json.loads(p.read_text(encoding='utf-8'))
+    except Exception:
+        data = {'raw': p.read_text(errors='ignore')}
+    return jsonify({'item': data})
+
+# Serve existing report (if present) under /report
+REPORT_DIR = ROOT / 'exports' / 'reports'
+
+@app.get('/report')
+def report_index():
+    idx = REPORT_DIR / 'index.html'
+    if not idx.exists():
+        return jsonify({'error': 'report not found', 'path': str(idx)}), 404
+    return send_from_directory(str(REPORT_DIR), 'index.html')
+
+@app.get('/report/<path:path>')
+def report_static(path):
+    if not REPORT_DIR.exists():
+        return jsonify({'error': 'report dir not found'}), 404
+    return send_from_directory(str(REPORT_DIR), path)
 

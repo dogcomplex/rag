@@ -35,9 +35,12 @@
       <h3>Planner</h3>
       <div class="row" style="margin-bottom:8px;">
         <label>Plugins</label>
-        <select id="plugins" multiple size="8" style="width:100%">
-          <option value="summaries">summaries</option>
+        <select id="plugins" multiple size="10" style="width:100%">
           <option value="summary-20w">summary-20w</option>
+          <option value="summary-short">summary-short</option>
+          <option value="summary-medium">summary-medium</option>
+          <option value="summary-long">summary-long</option>
+          <option value="summary-outline">summary-outline</option>
           <option value="topic-tags">topic-tags</option>
           <option value="keyphrases">keyphrases</option>
           <option value="glossary">glossary</option>
@@ -49,10 +52,6 @@
           <option value="recent-summary">recent-summary</option>
           <option value="pii-scan">pii-scan</option>
         </select>
-      </div>
-      <div class="row" style="margin-bottom:8px;">
-        <label>Summaries modes</label>
-        <input id="sum_modes" value="short,medium" style="flex:1" />
       </div>
       <div class="row" style="margin-bottom:8px;">
         <label>Changed since (min)</label>
@@ -76,7 +75,7 @@
       <hr/>
       <h3>Worker</h3>
       <div class="row" style="margin-bottom:8px;">
-        <input id="worker_plugins" value="summaries,keyphrases,bridge-candidates,risk-scan,recent-summary" style="flex:1" />
+        <input id="worker_plugins" value="summary-short,summary-medium,summary-long,summary-outline,keyphrases,bridge-candidates,risk-scan,recent-summary" style="flex:1" />
         <label>batch</label>
         <input id="worker_batch" type="number" value="32" style="width:90px" />
       </div>
@@ -100,6 +99,12 @@
       <div id="domains"></div>
       <h3 style="margin-top:16px;">Worker Log (tail)</h3>
       <pre id="worker_log" style="background:#111;color:#ddd;padding:8px;border-radius:6px;max-height:200px;overflow:auto;"></pre>
+
+      <h3 style="margin-top:16px;">Documents</h3>
+      <div class="row" style="margin-bottom:8px;">
+        <input id="doc_filter" placeholder="filter by doc_id or domain" oninput="renderDocs()" style="flex:1" />
+      </div>
+      <div id="docs"></div>
     </section>
   </main>
 
@@ -119,8 +124,7 @@
         plugins,
         only_missing: document.getElementById('only_missing').checked,
         changed_since_min: parseInt(document.getElementById('changed_min').value||'0'),
-        limit: parseInt(document.getElementById('limit').value||'0'),
-        summaries_modes: (document.getElementById('sum_modes').value||'').split(',').map(s=>s.trim()).filter(Boolean)
+        limit: parseInt(document.getElementById('limit').value||'0')
       };
       await fetch('/api/plan', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
       await refresh();
@@ -157,10 +161,20 @@
       const q = data.queue||{};
       const qdiv = document.getElementById('queue');
       const rows = [];
-      rows.push(`<div class="panel"><div><b>Total</b>: ${q.total||0}</div><div>by_status: ${JSON.stringify(q.by_status||{})}</div><div>oldest_pending_min: ${q.oldest_pending_min??'n/a'}</div></div>`);
+      const thr = q.throughput||{};
+      const eta = q.eta||{};
+      const overallEta = eta.overall_sec != null ? `, ETA: ${fmtDur(eta.overall_sec)}` : '';
+      rows.push(`<div class="panel"><div><b>Total</b>: ${q.total||0}${overallEta}</div><div>by_status: ${JSON.stringify(q.by_status||{})}</div><div>oldest_pending_min: ${q.oldest_pending_min??'n/a'}</div><div><small>throughput: overall ${thr.overall_dps||0}/s over ${thr.window_min||0}m</small></div></div>`);
       const bp = q.by_plugin_status||{};
+      const dur = q.durations||{};
       Object.keys(bp).sort().forEach(k=>{
-        rows.push(`<div class="panel"><div><b>${k}</b></div><div><small>${JSON.stringify(bp[k])}</small></div></div>`);
+        const d = dur[k];
+        const est = d? `, avg ${d.avg_s}s over ${d.n}` : '';
+        let etaPlug = '';
+        if(eta.plugin_sec && eta.plugin_sec[k] != null){ etaPlug = `, ETA ${fmtDur(eta.plugin_sec[k])}`; }
+        let dps = '';
+        if(thr.plugin_dps && thr.plugin_dps[k] != null){ dps = `, ${thr.plugin_dps[k]}/s`; }
+        rows.push(`<div class="panel"><div><b>${k}</b>${est}${dps}${etaPlug}</div><div><small>${JSON.stringify(bp[k])}</small></div></div>`);
       });
       qdiv.innerHTML = rows.join('');
 
@@ -181,6 +195,9 @@
       const w = data.worker||{};
       const log = (w.log_tail||[]).join('\n');
       document.getElementById('worker_log').textContent = (w.running? '[running]\n' : '[stopped]\n') + log;
+
+      window.__STATUS__ = data;
+      if(!window.__DOCS__){ loadDocs(); }
     }
     refresh();
     setInterval(()=>{
@@ -188,6 +205,60 @@
       const sec = parseInt(document.getElementById('refresh_sec').value||'5');
       if(on){ refresh(); }
     }, 5000);
+    function fmtDur(sec){
+      sec = Math.max(0, Math.round(sec));
+      const h = Math.floor(sec/3600); const m = Math.floor((sec%3600)/60); const s = sec%60;
+      return (h>0? h+'h ': '') + (m>0? m+'m ': '') + s + 's';
+    }
+  </script>
+  <script>
+    async function loadDocs(){
+      const r = await fetch('/api/docs');
+      const data = await r.json();
+      window.__DOCS__ = data.docs||[];
+      renderDocs();
+    }
+    function renderDocs(){
+      const docs = (window.__DOCS__||[]).slice();
+      const q = (document.getElementById('doc_filter').value||'').toLowerCase();
+      const root = document.getElementById('docs');
+      const rows = [];
+      docs.filter(d=>!q || d.doc_id.toLowerCase().includes(q) || (d.domain||'').toLowerCase().includes(q))
+          .forEach(d=>{
+        rows.push(`<details><summary><b>${d.doc_id}</b> <small>${d.domain}</small> <span class=mono>${d.path||''}</span></summary>
+          <div class=grid>
+            ${attrButton(d.doc_id,'summary-20w')}
+            ${attrButton(d.doc_id,'topic-tags')}
+            ${attrButton(d.doc_id,'pii-scan')}
+            ${attrButton(d.doc_id,'glossary')}
+            ${attrButton(d.doc_id,'requirements')}
+            ${attrButton(d.doc_id,'todo-items')}
+            ${attrButton(d.doc_id,'faq-pairs')}
+            ${attrButton(d.doc_id,'keyphrases')}
+            ${attrButton(d.doc_id,'bridge-candidates')}
+            ${attrButton(d.doc_id,'risk-scan')}
+            ${attrButton(d.doc_id,'recent-summary')}
+            ${attrButton(d.doc_id,'summary-short')}
+            ${attrButton(d.doc_id,'summary-medium')}
+            ${attrButton(d.doc_id,'summary-long')}
+            ${attrButton(d.doc_id,'summary-outline')}
+          </div>
+          <pre id="doc_${d.doc_id}" style="white-space:pre-wrap;background:#f6f6f6;padding:8px;border-radius:6px;display:none"></pre>
+        </details>`);
+      });
+      root.innerHTML = rows.join('');
+    }
+    function attrButton(doc_id, plug){
+      return `<button class=btn onclick=showAttr('${doc_id}','${plug}')>${plug}</button>`;
+    }
+    async function showAttr(doc_id, plug){
+      const r = await fetch(`/api/doc/${doc_id}/attr/${plug}`);
+      const data = await r.json();
+      const pre = document.getElementById(`doc_${doc_id}`);
+      pre.style.display = 'block';
+      pre.textContent = JSON.stringify(data.item||data, null, 2);
+    }
+    
   </script>
 </body>
 </html>

@@ -15,6 +15,13 @@ def ensure_db(cfg):
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
+    # add completed_at if missing
+    try:
+        cols = [r[1] for r in con.execute("PRAGMA table_info(jobs)").fetchall()]
+        if 'completed_at' not in cols:
+            con.execute("ALTER TABLE jobs ADD COLUMN completed_at TIMESTAMP")
+    except Exception:
+        pass
     con.commit(); con.close()
 def enqueue(cfg, plugin: str, doc_id: str, payload: dict|None=None):
     con = sqlite3.connect(_db_path(cfg))
@@ -35,7 +42,7 @@ def dequeue_batch(cfg, wanted_plugins, limit=16):
     con.commit(); con.close()
     return [{"id": r[0], "plugin": r[1], "doc_id": r[2], "payload": json.loads(r[3] or '{}')} for r in rows]
 def ack_job(cfg, job_id: int):
-    con = sqlite3.connect(_db_path(cfg)); con.execute("UPDATE jobs SET status='done' WHERE id=?", (job_id,))
+    con = sqlite3.connect(_db_path(cfg)); con.execute("UPDATE jobs SET status='done', completed_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
     con.commit(); con.close()
 def iter_docs_for_jobs(jobs):
     from pathlib import Path

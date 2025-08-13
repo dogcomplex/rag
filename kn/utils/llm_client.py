@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv(override=False)
 
 def _settings():
-    base = os.getenv('OPENAI_BASE_URL', 'http://localhost:1234/v1')
+    base = os.getenv('OPENAI_BASE_URL') or 'http://127.0.0.1:12345/v1'
     key  = os.getenv('OPENAI_API_KEY', 'lm-studio')
     model= os.getenv('OPENAI_MODEL', 'llama-3.1-8b-instruct')
     return base, key, model
