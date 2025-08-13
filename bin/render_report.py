@@ -1,4 +1,4 @@
-import json, pathlib, html, datetime as dt
+import json, pathlib, html, datetime as dt, sqlite3
 
 CHUNKS_DIR = pathlib.Path('.knowledge/indexes/chunks')
 ATTR_DIR   = pathlib.Path('.knowledge/indexes/attributes')
@@ -52,7 +52,7 @@ def _esc(s):
 
 def _render_doc_card(d):
     doc_id = d['doc_id']
-    parts = [f"<div class='card'><div class='hdr'><span class='rel'>{_esc(d['rel'])}</span><span class='meta'>doc:{doc_id} · domain:{_esc(d['domain'])}</span></div>"]
+    parts = [f"<div class='card' id='doc-{doc_id}' data-doc='{doc_id}' data-domain='{_esc(d['domain'])}'><div class='hdr'><span class='rel'>{_esc(d['rel'])}</span><span class='meta'>doc:{doc_id} · domain:{_esc(d['domain'])}</span></div>"]
     # attributes
     def sec(title, txt):
         if not txt: return
@@ -76,6 +76,58 @@ def main():
     comms = _load_comms()
     OUT_HTML.parent.mkdir(parents=True, exist_ok=True)
     now = dt.datetime.now().strftime('%Y-%m-%d %H:%M')
+    # attribute coverage & rollups
+    doc_ids = {d['doc_id'] for d in docs}
+    attr_cov = {}
+    attr_examples_missing = {}
+    for plugin in PLUGINS:
+        have = set()
+        p = ATTR_DIR / plugin
+        if p.exists():
+            for f in p.glob('*.json'):
+                have.add(f.stem)
+        attr_cov[plugin] = {'have': len(have & doc_ids), 'total': len(doc_ids)}
+        missing = list(doc_ids - have)
+        attr_examples_missing[plugin] = missing[:5]
+    # PII rollup
+    pii_counts = {'high':0,'any':0}
+    pii_dir = ATTR_DIR/'pii-scan'
+    if pii_dir.exists():
+        for f in pii_dir.glob('*.json'):
+            try:
+                d = json.loads(f.read_text(encoding='utf-8'))
+                r = float(d.get('risk') or 0)
+                if r>0: pii_counts['any']+=1
+                if r>=0.8: pii_counts['high']+=1
+            except Exception:
+                continue
+    # TODO rollup
+    todo_nonempty = 0
+    todo_dir = ATTR_DIR/'todo-items'
+    if todo_dir.exists():
+        for f in todo_dir.glob('*.json'):
+            try:
+                d = json.loads(f.read_text(encoding='utf-8'))
+                if d.get('value'): todo_nonempty += 1
+            except Exception:
+                continue
+    # requirements present/missing
+    req_dir = ATTR_DIR/'requirements'
+    req_have = set()
+    if req_dir.exists():
+        req_have = {f.stem for f in req_dir.glob('*.json')}
+    req_missing = list((doc_ids - req_have))
+    # queue summary (best effort)
+    queue = {'present': (pathlib.Path('.knowledge/queues/jobs.sqlite').exists())}
+    if queue['present']:
+        try:
+            con = sqlite3.connect('.knowledge/queues/jobs.sqlite')
+            cur = con.cursor()
+            by_status = {k: v for k, v in cur.execute("select status,count(*) from jobs group by status")}
+            queue['by_status']=by_status; queue['total']=sum(by_status.values())
+            con.close()
+        except Exception:
+            pass
     # prepare graph data (nodes/links), limited for performance
     graph_nodes = []
     graph_links = []
@@ -146,6 +198,26 @@ header h1{{font-size:18px;margin:0}}
           {''.join(f"<li>- { _esc(c.get('id')) } (size={ _esc(c.get('size')) }): { _esc(c.get('summary')) }</li>" for c in comms)}
           </ul>
         </div>
+      </div>
+    </div>
+  </div>
+  <div class='col'>
+    <div class='card'>
+      <div class='hdr'><span class='rel'>Coverage</span><span class='meta'>{len(doc_ids)} docs</span></div>
+      <div class='sec'>
+        {''.join(f"<div style='margin:6px 0'><div class='stit'>{_esc(k)}</div><div style='background:#eee;border-radius:6px;overflow:hidden'><div style='height:8px;width:{ (attr_cov[k]['have']*100/max(1,attr_cov[k]['total'])):.1f}%;background:#0f62fe'></div></div><div style='font-size:12px;color:#666'>{attr_cov[k]['have']}/{attr_cov[k]['total']}" + (" · missing: "+', '.join(f"<a href=#doc-{_esc(m)}>#{_esc(m)}</a>" for m in attr_examples_missing[k]) if attr_examples_missing[k] else '') + "</div></div>" for k in PLUGINS)}
+      </div>
+      <div class='sec'>
+        <div class='stit'>PII & TODO</div>
+        <div class='sbody' style='font-size:12px;color:#444'>PII high-risk: {pii_counts['high']} · PII any: {pii_counts['any']} · Files with TODOs: {todo_nonempty}</div>
+      </div>
+      <div class='sec'>
+        <div class='stit'>Requirements</div>
+        <div class='sbody' style='font-size:12px;color:#444'>present: {len(req_have)} · missing: {len(req_missing)} {('· e.g. '+', '.join(f"<a href=#doc-{_esc(m)}>#{_esc(m)}</a>" for m in req_missing[:5])) if req_missing else ''}</div>
+      </div>
+      <div class='sec'>
+        <div class='stit'>Queue</div>
+        <div class='sbody' style='font-size:12px;color:#444'>present: {queue.get('present')} · total: {queue.get('total','-')} · by_status: { _esc(queue.get('by_status','-')) }</div>
       </div>
     </div>
   </div>

@@ -21,3 +21,4 @@ python-magic-bin; sys_platform == 'win32'
 PyMuPDF
 chardet
 # pytesseract  # optional
+flask

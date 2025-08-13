@@ -1,4 +1,4 @@
-import argparse, pathlib
+import argparse, pathlib, time
 from kn.config import load_configs
 from kn.jobs_sqlite import ensure_db, enqueue
 
@@ -6,6 +6,11 @@ ATTR_ROOT = pathlib.Path('.knowledge/indexes/attributes')
 CHUNKS_DIR = pathlib.Path('.knowledge/indexes/chunks')
 
 def already_has(plugin: str, doc_id: str) -> bool:
+    if plugin == 'summaries':
+        pdir = ATTR_ROOT / 'summaries'
+        if not pdir.exists():
+            return False
+        return any(pp.name.startswith(f"{doc_id}_") for pp in pdir.glob(f"{doc_id}_*.json"))
     p = ATTR_ROOT / plugin / f"{doc_id}.json"
     return p.exists()
 
@@ -17,25 +22,47 @@ def iter_doc_ids():
             seen.add(doc_id)
             yield doc_id
 
+def latest_mtime_for_doc(doc_id: str) -> float:
+    mt = 0.0
+    for p in CHUNKS_DIR.glob(f"{doc_id}-*.json"):
+        mt = max(mt, p.stat().st_mtime)
+    return mt
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--plugins', required=False, default='glossary,requirements,todo-items,faq-pairs', help='comma-separated plugin names')
-    ap.add_argument('--limit', type=int, default=0, help='max docs to enqueue per plugin (0 = all)')
+    ap.add_argument('--limit', type=int, default=0, help='max jobs to enqueue in total (0 = unlimited)')
     ap.add_argument('--only-missing', action='store_true', help='enqueue only if attribute output file missing')
+    ap.add_argument('--changed-since-min', type=int, default=0, help='only enqueue docs whose chunks changed in last N minutes (0 = ignore)')
+    ap.add_argument('--summaries-modes', default='short,medium', help='for plugin "summaries", comma list of modes (short,medium,long,outline)')
     args = ap.parse_args()
 
     cfg = load_configs()
     ensure_db(cfg)
     plugins = [p.strip() for p in args.plugins.split(',') if p.strip()]
+    sum_modes = [m.strip() for m in args.summaries_modes.split(',') if m.strip()] if 'summaries' in plugins else []
+
+    cutoff = None
+    if args.changed_since_min and args.changed_since_min > 0:
+        cutoff = time.time() - args.changed_since_min * 60
+
     count = 0
     for doc_id in iter_doc_ids():
+        if cutoff is not None and latest_mtime_for_doc(doc_id) < cutoff:
+            continue
         for plugin in plugins:
             if args.only_missing and already_has(plugin.replace('-', '_'), doc_id):
                 continue
-            enqueue(cfg, plugin, doc_id, payload={})
-            count += 1
-        if args.limit and count >= args.limit:
-            break
+            if plugin == 'summaries' and sum_modes:
+                for mode in sum_modes:
+                    enqueue(cfg, plugin, doc_id, payload={'mode': mode})
+                    count += 1
+            else:
+                enqueue(cfg, plugin, doc_id, payload={})
+                count += 1
+            if args.limit and count >= args.limit:
+                print(f"[plan] enqueued {count} jobs (limit reached)")
+                return
     print(f"[plan] enqueued {count} jobs for plugins: {', '.join(plugins)}")
 
 if __name__ == '__main__':

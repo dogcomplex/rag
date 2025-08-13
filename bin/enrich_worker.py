@@ -23,7 +23,10 @@ def run_once(plugins, cfg, batch_size=16):
         for j in items:
             doc = docs.get(j["doc_id"])
             if doc:
-                inp_lines.append(json.dumps(doc, ensure_ascii=False))
+                payload = j.get("payload") or {}
+                merged = dict(doc)
+                merged["payload"] = payload
+                inp_lines.append(json.dumps(merged, ensure_ascii=False))
         if not inp_lines:
             for j in items: ack_job(cfg, j["id"])
             continue
