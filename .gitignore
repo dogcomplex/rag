@@ -1,7 +1,62 @@
+# Virtual environments
 .venv/
+venv/
+ENV/
+env/
+*.venv
+
+# Python cache / compiled files
 __pycache__/
-.knowledge/
+*.py[cod]
+*.pyo
+
+# Build / packaging
+.Python
+build/
+dist/
+develop-eggs/
+downloads/
+.eggs/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# Unit test / coverage
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache/
+.pytest_cache/
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
 *.log
-*.pyc
+logs/
+
+# IDE / editor
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS
 .DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment files
+.env
+.env.*
+
+# Databases / data
+*.db
+*.sqlite
+*.sqlite3
+
+# Project-specific
+.knowledge/
 FAE/
