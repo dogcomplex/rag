@@ -22,8 +22,8 @@ def load_configs():
         "llm": {
             "base_url": os.getenv("OPENAI_BASE_URL", "http://localhost:1234/v1"),
             "api_key": os.getenv("OPENAI_API_KEY", "lm-studio"),
-            "model": os.getenv("OPENAI_MODEL", "llama-3.1-8b-instruct"),
-            "max_tokens": 2048,
+            "model": os.getenv("OPENAI_MODEL", "meta-llama-3.1-8b-instruct"),
+            "max_tokens": 4096,
             "temperature": 0.2,
         },
         "embeddings": {"name": os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5"), "normalize": True, "device": "auto"},
@@ -42,7 +42,48 @@ def load_configs():
                                  "code":{"max_chars":2400,"overlap":200},
                                   "pdf":{"max_chars":3500,"overlap":200}}},
         "attributes": {"plugins": ["summary-20w", "topic-tags", "pii-scan"], "auto_enqueue": True},
-        "plugins": {}
+        "plugins": {
+            "summary-20w": {
+                "llm": {
+                    "model": "meta-llama-3.1-8b-instruct",
+                    "timeout": 120,
+                    "max_tokens": 2048,
+                    "temperature": 0.3
+                }
+            },
+            "summary-short": {
+                "llm": {
+                    "model": "meta-llama-3.1-8b-instruct",
+                    "timeout": 120,
+                    "max_tokens": 2048,
+                    "temperature": 0.3
+                }
+            },
+            "topic-tags": {
+                "llm": {
+                    "model": "meta-llama-3.1-8b-instruct",
+                    "timeout": 120,
+                    "max_tokens": 1536,
+                    "temperature": 0.2
+                }
+            },
+            "multi-basic": {
+                "llm": {
+                    "model": "qwen2.5-32b-instruct",
+                    "timeout": 420,
+                    "max_tokens": 8192,
+                    "temperature": 0.2
+                }
+            },
+            "doc-skeleton": {
+                "llm": {
+                    "model": "qwen2.5-32b-instruct",
+                    "timeout": 420,
+                    "max_tokens": 8192,
+                    "temperature": 0.2
+                }
+            }
+        }
     }
     if models_yml.exists():
         cfg = _merge(cfg, yaml.safe_load(models_yml.read_text(encoding="utf-8")))

@@ -39,6 +39,8 @@ def enqueue(cfg, plugin: str, doc_id: str, payload: dict|None=None):
                 (plugin, doc_id, json.dumps(payload or {})))
     con.commit(); con.close()
 def dequeue_batch(cfg, wanted_plugins, limit=16):
+    if not wanted_plugins:
+        return []
     con = sqlite3.connect(_db_path(cfg)); cur = con.cursor()
     qmarks = ",".join(["?"]*len(wanted_plugins))
     cur.execute(f"""
@@ -61,6 +63,14 @@ def fail_and_requeue_job(cfg, job_id: int, error_message: str|None=None, back_to
         con.execute("UPDATE jobs SET status='pending', retries=coalesce(retries,0)+1, last_error=? WHERE id=?", (error_message, job_id))
     else:
         con.execute("UPDATE jobs SET status='failed', retries=coalesce(retries,0)+1, last_error=? WHERE id=?", (error_message, job_id))
+    con.commit(); con.close()
+
+def reset_status(cfg, job_ids, status='pending'):
+    if not job_ids:
+        return
+    con = sqlite3.connect(_db_path(cfg))
+    placeholders = ",".join(["?"]*len(job_ids))
+    con.execute(f"UPDATE jobs SET status=? WHERE id IN ({placeholders})", (status, *job_ids))
     con.commit(); con.close()
 
 def list_pending_plugins(cfg):

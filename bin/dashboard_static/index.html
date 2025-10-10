@@ -93,14 +93,16 @@
       <div class="row" style="margin-bottom:8px;">
         <input id="worker_plugins" value="*" style="flex:1" />
         <label>batch</label>
-        <input id="worker_batch" type="number" value="32" style="width:90px" />
+        <input id="worker_batch" type="number" value="8" style="width:90px" />
         <label>max-inflight</label>
         <input id="worker_max_inflight" type="number" value="2" style="width:90px" />
       </div>
       <div class="row">
         <button class="btn" onclick="startWorker()">Start Worker</button>
         <button class="btn" onclick="stopWorkerAll()">Stop All</button>
+        <button class="btn" onclick="testWorker()">Test Connection</button>
       </div>
+      <pre id="worker_test_result" class="mono" style="margin-top:8px;background:#111;color:#ddd;padding:8px;border-radius:6px;max-height:160px;overflow:auto;"></pre>
       <div id="workers_list" style="margin-top:8px;"></div>
     </section>
 
@@ -121,19 +123,19 @@
       </details>
       <details style="margin:8px 0;">
         <summary><b>Queue listing</b> <small>(ordered by id asc)</small></summary>
-        <div class="row" style="margin:6px 0;">
-          <label>Status</label>
-          <select id="queue_status"><option value="">(any)</option><option>pending</option><option>running</option><option>done</option></select>
-          <label>Plugin</label>
-          <input id="queue_plugin" placeholder="(any)" />
-          <label>Limit</label>
-          <input id="queue_limit" type="number" value="200" style="width:90px" />
-          <button class="btn" onclick="loadQueueList()">Load</button>
-          <span style="flex:1"></span>
-          <label>Clear</label>
-          <select id="queue_clear_mode"><option value="non-done">non-done</option><option value="pending">pending</option><option value="reset-running">reset running→pending</option><option value="all">all</option></select>
-          <button class="btn" onclick="clearQueue()">Clear Queue</button>
-        </div>
+      <div class="row" style="margin:6px 0;">
+        <label>Status</label>
+        <select id="queue_status"><option value="">(any)</option><option>pending</option><option>running</option><option>done</option></select>
+        <label>Plugin</label>
+        <input id="queue_plugin" placeholder="(any)" />
+        <label>Limit</label>
+        <input id="queue_limit" type="number" value="200" style="width:90px" />
+        <button class="btn" onclick="loadQueueList()">Load</button>
+        <span style="flex:1"></span>
+        <label>Clear</label>
+        <select id="queue_clear_mode"><option value="non-done">non-done</option><option value="pending">pending</option><option value="reset-running">reset running→pending</option><option value="all">all</option></select>
+        <button class="btn" onclick="clearQueue()">Clear Queue</button>
+      </div>
         <div id="queue_list" style="max-height:240px; overflow:auto; border:1px solid #eee; border-radius:6px; padding:6px;"></div>
       </details>
       <details style="margin:8px 0;">
@@ -223,7 +225,7 @@
     }
     async function startWorker(){
       const plugins = (document.getElementById('worker_plugins').value||'').split(',').map(s=>s.trim()).filter(Boolean);
-      const batch = parseInt(document.getElementById('worker_batch').value||'32');
+      const batch = parseInt(document.getElementById('worker_batch').value||'8');
       const max_inflight = parseInt(document.getElementById('worker_max_inflight').value||'2');
       await fetch('/api/worker/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({plugins, batch, max_inflight})});
       await refresh();
@@ -231,6 +233,18 @@
     async function stopWorkerAll(){
       await fetch('/api/worker/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
       await refresh();
+    }
+    async function testWorker(){
+      const out = document.getElementById('worker_test_result');
+      try{
+        const r = await fetch('/api/status?force_models=1');
+        const txt = await r.text();
+        out.textContent = `HTTP ${r.status}\n${txt}`;
+        console.log('[worker test]', r.status, txt);
+      }catch(err){
+        out.textContent = `Request failed: ${err}`;
+        console.error('[worker test] error', err);
+      }
     }
     function render(data){
       const llm = document.getElementById('llm');
@@ -292,9 +306,21 @@
     function renderWorkers(list){
       const root = document.getElementById('workers_list');
       if(!list || !list.length){ root.innerHTML = '<small>No workers</small>'; return; }
-      root.innerHTML = '<table><thead><tr><th>ID</th><th>PID</th><th>Plugins</th><th>Batch</th><th>Started</th><th>Status</th><th></th></tr></thead><tbody>'+
-        list.map(w=>`<tr><td>${w.id}</td><td>${w.pid||''}</td><td><small>${(w.plugins||[]).join(', ')}</small></td><td>${w.batch||''}</td><td><small>${w.started_at||''}</small></td><td>${w.running?'running':'stopped'}</td><td><button class=btn onclick=\"stopWorker(${w.id})\">Stop</button></td></tr>`).join('')+
-        '</tbody></table>';
+      root.innerHTML = '<div style="overflow-x:auto;">' +
+        '<table style="min-width:820px;"><thead><tr><th>Current</th><th>ID</th><th>PID</th><th>Plugins</th><th>Batch</th><th>Started</th><th>Status</th><th></th></tr></thead><tbody>'+
+        list.map(w=>`<tr><td><small class="mono" style="white-space:pre-wrap;">${w.current?fmtCurrent(w.current):''}</small></td><td>${w.id}</td><td>${w.pid||''}</td><td><small>${(w.plugins||[]).join(', ')}</small></td><td>${w.batch||''}</td><td><small>${w.started_at||''}</small></td><td>${w.running?'running':'stopped'}</td><td><button class=btn onclick="stopWorker(${w.id})">Stop</button></td></tr>`).join('')+
+        '</tbody></table></div>';
+    }
+    function fmtCurrent(cur){
+      if(!cur) return '';
+      const parts = [];
+      if(cur.plugin) parts.push(`plugin=${cur.plugin}`);
+      if(cur.docs){
+        const docs = cur.docs.length > 80 ? cur.docs.slice(0,77) + '…' : cur.docs;
+        parts.push(`docs=${docs}`);
+      }
+      if(cur.since) parts.push(`since ${cur.since}`);
+      return parts.map(p=>`• ${p}`).join('\n');
     }
     async function stopWorker(id){
       await fetch('/api/worker/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})});
@@ -309,6 +335,7 @@
       if(plugin) params.set('plugin', plugin);
       if(limit) params.set('limit', String(limit));
       const r = await fetch('/api/queue/list?' + params.toString());
+      console.debug('[queue-list] status', r.status);
       const data = await r.json();
       const items = data.items||[];
       const root = document.getElementById('queue_list');
@@ -319,20 +346,16 @@
     }
     async function clearQueue(){
       const mode = document.getElementById('queue_clear_mode').value||'non-done';
+      console.debug('[queue-clear] mode', mode);
       await fetch('/api/queue/clear', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode})});
       await loadQueueList(true);
       await refresh();
     }
     async function loadPluginDefaults(){
-      const r = await fetch('/api/plugins/config');
-      const data = await r.json();
-      document.getElementById('plugin_defaults_json').value = JSON.stringify(data.plugins||{}, null, 2);
+      document.getElementById('plugin_defaults_json').value = 'Not supported on this build.';
     }
     async function savePluginDefaults(){
-      const txt = document.getElementById('plugin_defaults_json').value||'{}';
-      let obj={}; try{ obj = JSON.parse(txt);}catch(e){ alert('Invalid JSON'); return; }
-      await fetch('/api/plugins/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({plugins: obj})});
-      await refresh();
+      alert('Saving plugin defaults is disabled in this build.');
     }
     async function loadCacheStats(){
       const r = await fetch('/api/cache/llm/stats');

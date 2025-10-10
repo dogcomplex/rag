@@ -1,4 +1,4 @@
-import argparse, time
+import argparse, time, json
 from kn.config import load_configs
 from kn.jobs_sqlite import ensure_db, dequeue_batch, ack_job, iter_docs_for_jobs, fail_and_requeue_job, list_pending_plugins, try_acquire, release, set_limit
 
@@ -25,7 +25,7 @@ def run_once(plugins, cfg, batch_size=16):
             except Exception:
                 return None
         return None
-    import subprocess, json, pathlib, sys
+    import subprocess, pathlib, sys
     by_plugin = {}
     for j in jobs:
         by_plugin.setdefault(j["plugin"], []).append(j)
@@ -42,7 +42,7 @@ def run_once(plugins, cfg, batch_size=16):
                 fail_and_requeue_job(cfg, j["id"], error_message="plugin not found", back_to_pending=False)
             continue
         inp_lines = []
-        id_order = []
+        doc_ids = []
         for j in items:
             payload = j.get("payload") or {}
             doc = None
@@ -54,7 +54,7 @@ def run_once(plugins, cfg, batch_size=16):
                 merged = dict(doc)
                 merged["payload"] = payload
                 inp_lines.append(json.dumps(merged, ensure_ascii=False))
-                id_order.append(j["id"])
+                doc_ids.append(j["doc_id"])
         if not inp_lines:
             for j in items:
                 fail_and_requeue_job(cfg, j["id"], error_message="no input doc", back_to_pending=False)
@@ -65,8 +65,17 @@ def run_once(plugins, cfg, batch_size=16):
             proc_timeout = pcfg.get('process_timeout') if isinstance(pcfg, dict) else None
             if not isinstance(proc_timeout, (int, float)):
                 proc_timeout = 600 if plugin in ('multi-basic','doc-skeleton') else 300
-            proc = subprocess.Popen([sys.executable, str(pypath)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            summary_docs = ",".join(doc_ids[:4])
+            if len(doc_ids) > 4:
+                summary_docs += ",…"
+            if summary_docs:
+                print(f"[worker-current] plugin={plugin} docs={summary_docs}")
+            proc = subprocess.Popen([sys.executable, str(pypath)], stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             out, _ = proc.communicate("\n".join(inp_lines), timeout=proc_timeout)
+            if out:
+                for line in out.splitlines():
+                    print(f"[plugin:{plugin}] {line}")
             print(f"[enrich] {plugin}: {len(items)} docs processed")
             for j in items:
                 ack_job(cfg, j["id"])
@@ -81,6 +90,7 @@ def run_once(plugins, cfg, batch_size=16):
                 fail_and_requeue_job(cfg, j["id"], error_message=msg, back_to_pending=True)
         finally:
             release(cfg, 'llm_concurrency')
+            print(f"[worker-current-clear] plugin={plugin}")
     return len(jobs)
 
 if __name__ == "__main__":

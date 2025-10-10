@@ -11,6 +11,7 @@ STATIC_DIR = BASE_DIR / 'dashboard_static'
 
 app = Flask(__name__, static_folder=str(STATIC_DIR))
 
+
 from collections import deque
 import itertools, datetime
 _WORKER_ID_GEN = itertools.count(1)
@@ -19,6 +20,30 @@ WORKERS: dict[int, dict] = {}
 CHUNKS_DIR = pathlib.Path('.knowledge/indexes/chunks')
 ATTR_DIR = pathlib.Path('.knowledge/indexes/attributes')
 DB_PATH = pathlib.Path('.knowledge/queues/jobs.sqlite')
+
+
+def _handle_worker_line(wid: int, line: str):
+    w = WORKERS.get(wid)
+    if not w:
+        return
+    if line.startswith('[worker-current]'):
+        # expected format: [worker-current] plugin=foo docs=doc1,doc2,…
+        try:
+            rest = line.split(']', 1)[1].strip()
+            parts = {}
+            for part in rest.split():
+                if '=' in part:
+                    k, v = part.split('=', 1)
+                    parts[k] = v
+            w['current'] = {
+                'plugin': parts.get('plugin'),
+                'docs': parts.get('docs'),
+                'since': datetime.datetime.now().isoformat(timespec='seconds'),
+            }
+        except Exception:
+            w['current'] = {'raw': line}
+    elif line.startswith('[worker-current-clear]'):
+        w['current'] = None
 
 def _unique_doc_ids():
     seen = set()
@@ -163,35 +188,6 @@ def _read_jobs_status():
     }
     return data
 
-@app.get('/api/status')
-def api_status():
-    force_models = bool(request.args.get('force_models'))
-    data = _read_jobs_status()
-    workers = []
-    for wid, w in WORKERS.items():
-        proc = w.get('proc')
-        workers.append({
-            'id': wid,
-            'pid': proc.pid if proc else None,
-            'running': (proc is not None and proc.poll() is None),
-            'plugins': w.get('plugins'),
-            'batch': w.get('batch'),
-            'watch': w.get('watch'),
-            'started_at': w.get('started_at'),
-            'log_tail': list(w.get('log', deque()))[-50:],
-        })
-    data['workers'] = workers
-    if workers:
-        data['worker'] = workers[0]
-    # plugin defaults snapshot
-    try:
-        cfg = load_configs()
-        data['plugin_defaults'] = cfg.get('plugins', {})
-    except Exception:
-        data['plugin_defaults'] = {}
-    # refresh llm section with cache control
-    data['llm'] = _llm_health(force=force_models)
-    return jsonify(data)
 
 @app.post('/api/enqueue')
 def api_enqueue():
@@ -243,11 +239,14 @@ def _spawn_worker(plugins: list[str], batch: int, watch: bool=True):
         'watch': watch,
         'started_at': datetime.datetime.now().isoformat(timespec='seconds'),
         'log': wlog,
+        'current': None,
     }
     def _reader():
         try:
             for line in proc.stdout:
-                wlog.append(line.rstrip())
+                clean = line.rstrip()
+                wlog.append(clean)
+                _handle_worker_line(wid, clean)
         except Exception:
             pass
     threading.Thread(target=_reader, daemon=True).start()
@@ -273,19 +272,6 @@ def api_worker_stop():
     ok = _stop_worker_id(int(wid))
     return jsonify({'stopped': ok, 'worker_id': wid})
 
-def _stop_worker_id(wid: int) -> bool:
-    w = WORKERS.get(wid)
-    if not w:
-        return False
-    proc = w.get('proc')
-    if proc and (proc.poll() is None):
-        try:
-            proc.terminate()
-        except Exception:
-            pass
-    WORKERS.pop(wid, None)
-    return True
-
 @app.get('/api/workers')
 def api_workers():
     out = []
@@ -302,22 +288,108 @@ def api_workers():
         })
     return jsonify({'workers': out})
 
-@app.get('/')
-def root():
-    index_path = pathlib.Path(app.static_folder) / 'index.html'
-    if not index_path.exists():
-        return jsonify({'error':'index not found', 'path': str(index_path)}), 500
-    return send_from_directory(app.static_folder, 'index.html')
+@app.get('/api/queue/list')
+def api_queue_list():
+    try:
+        limit = int(request.args.get('limit', '200'))
+    except Exception:
+        limit = 200
+    status = request.args.get('status')  # optional: pending|running|done
+    plugin = request.args.get('plugin')  # optional
+    if not DB_PATH.exists():
+        return jsonify({'items': []})
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    cur = con.cursor()
+    q = "select id, plugin, doc_id, status, created_at from jobs"
+    cond = []
+    args = []
+    if status:
+        cond.append("status=?"); args.append(status)
+    if plugin:
+        cond.append("plugin=?"); args.append(plugin)
+    if cond:
+        q += " where " + " and ".join(cond)
+    q += " order by id asc limit ?"; args.append(limit)
+    rows = [dict(r) for r in cur.execute(q, args).fetchall()]
+    con.close()
+    return jsonify({'items': rows})
 
-@app.get('/<path:path>')
-def static_proxy(path):
-    return send_from_directory(app.static_folder, path)
+@app.post('/api/queue/clear')
+def api_queue_clear():
+    mode = (request.get_json(force=True, silent=True) or {}).get('mode') or 'non-done'
+    app.logger.info('[queue-clear] mode=%s', mode)
+    if not DB_PATH.exists():
+        return jsonify({'ok': True, 'cleared': 0, 'mode': mode})
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cleared = 0
+    try:
+        if mode == 'all':
+            cur.execute('delete from jobs')
+            cleared = cur.rowcount
+        elif mode == 'reset-running':
+            cur.execute("update jobs set status='pending' where status='running'")
+            cleared = cur.rowcount
+        elif mode == 'pending':
+            cur.execute("delete from jobs where status='pending'")
+            cleared = cur.rowcount
+        elif mode == 'non-done':
+            cur.execute("delete from jobs where status!='done'")
+            cleared = cur.rowcount
+        else:
+            return jsonify({'error': 'unknown mode', 'mode': mode}), 400
+        con.commit()
+    finally:
+        con.close()
+    return jsonify({'ok': True, 'cleared': int(cleared), 'mode': mode})
 
-def run(host='0.0.0.0', port=5051):
-    app.run(host=host, port=port, debug=False, threaded=True)
 
-if __name__ == '__main__':
-    run()
+# Plugin defaults (persisted to .knowledge/config/models.yml under 'plugins')
+
+# Cache management
+CACHE_DIR = pathlib.Path('.knowledge/cache/llm')
+
+@app.get('/api/cache/llm/stats')
+def api_cache_stats():
+    total = 0; count = 0
+    if CACHE_DIR.exists():
+        for p in CACHE_DIR.glob('*.json'):
+            try:
+                total += p.stat().st_size
+                count += 1
+            except Exception:
+                continue
+    return jsonify({'count': count, 'total_bytes': total})
+
+@app.get('/api/cache/llm/list')
+def api_cache_list():
+    try:
+        limit = int(request.args.get('limit', '200'))
+    except Exception:
+        limit = 200
+    items = []
+    if CACHE_DIR.exists():
+        files = sorted(CACHE_DIR.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in files[:limit]:
+            try:
+                st = p.stat()
+                items.append({'name': p.name, 'size': st.st_size, 'mtime': dt.datetime.fromtimestamp(st.st_mtime).isoformat(sep=' ')})
+            except Exception:
+                continue
+    return jsonify({'items': items})
+
+@app.post('/api/cache/llm/clear')
+def api_cache_clear():
+    cleared = 0
+    if CACHE_DIR.exists():
+        for p in CACHE_DIR.glob('*.json'):
+            try:
+                p.unlink(); cleared += 1
+            except Exception:
+                continue
+    return jsonify({'ok': True, 'cleared': cleared})
+
 
 # --------------
 # Document + attribute browsing APIs
@@ -485,122 +557,59 @@ def api_attr_docs(plugin):
     missing = sorted([d for d in all_docs if d not in have])
     return jsonify({'plugin': plugin, 'present': present, 'missing': missing})
 
-# Queue listing
-@app.get('/api/queue/list')
-def api_queue_list():
-    try:
-        limit = int(request.args.get('limit', '200'))
-    except Exception:
-        limit = 200
-    status = request.args.get('status')  # optional: pending|running|done
-    plugin = request.args.get('plugin')  # optional
-    if not DB_PATH.exists():
-        return jsonify({'items': []})
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row
-    cur = con.cursor()
-    q = "select id, plugin, doc_id, status, created_at from jobs"
-    cond = []
-    args = []
-    if status:
-        cond.append("status=?"); args.append(status)
-    if plugin:
-        cond.append("plugin=?"); args.append(plugin)
-    if cond:
-        q += " where " + " and ".join(cond)
-    q += " order by id asc limit ?"; args.append(limit)
-    rows = [dict(r) for r in cur.execute(q, args).fetchall()]
-    con.close()
-    return jsonify({'items': rows})
-
-@app.post('/api/queue/clear')
-def api_queue_clear():
-    mode = (request.get_json(force=True, silent=True) or {}).get('mode') or 'non-done'
-    if not DB_PATH.exists():
-        return jsonify({'ok': True, 'cleared': 0, 'mode': mode})
-    con = sqlite3.connect(DB_PATH)
-    cur = con.cursor()
-    cleared = 0
-    try:
-        if mode == 'all':
-            cur.execute("delete from jobs"); cleared = cur.rowcount
-        elif mode == 'reset-running':
-            cur.execute("update jobs set status='pending' where status='running'"); cleared = cur.rowcount
-        elif mode == 'pending':
-            cur.execute("delete from jobs where status='pending'"); cleared = cur.rowcount
-        elif mode == 'non-done':
-            cur.execute("delete from jobs where status!='done'"); cleared = cur.rowcount
-        else:
-            return jsonify({'error':'unknown mode','mode':mode}), 400
-        con.commit()
-    finally:
-        con.close()
-    return jsonify({'ok': True, 'cleared': int(cleared), 'mode': mode})
-
-# Plugin defaults (persisted to .knowledge/config/models.yml under 'plugins')
-@app.get('/api/plugins/config')
-def api_plugins_get():
-    cfg = load_configs()
-    return jsonify({'plugins': cfg.get('plugins', {})})
-
-@app.post('/api/plugins/config')
-def api_plugins_set():
-    body = request.get_json(force=True) or {}
-    plugins_map = body.get('plugins') or {}
-    # persist to models.yml
-    cfg_dir = pathlib.Path(load_configs().get('_root', '.knowledge')) / 'config'
-    models_yml = cfg_dir / 'models.yml'
-    cfg_dir.mkdir(parents=True, exist_ok=True)
-    current = {}
-    if models_yml.exists():
+def _stop_worker_id(wid: int) -> bool:
+    w = WORKERS.get(wid)
+    if not w:
+        return False
+    proc = w.get('proc')
+    if proc and (proc.poll() is None):
         try:
-            current = yaml.safe_load(models_yml.read_text(encoding='utf-8')) or {}
+            proc.terminate()
         except Exception:
-            current = {}
-    current['plugins'] = plugins_map
-    models_yml.write_text(yaml.safe_dump(current, sort_keys=False, allow_unicode=True), encoding='utf-8')
-    return jsonify({'ok': True})
+            pass
+    WORKERS.pop(wid, None)
+    return True
 
-# Cache management
-CACHE_DIR = pathlib.Path('.knowledge/cache/llm')
-
-@app.get('/api/cache/llm/stats')
-def api_cache_stats():
-    total = 0; count = 0
-    if CACHE_DIR.exists():
-        for p in CACHE_DIR.glob('*.json'):
-            try:
-                total += p.stat().st_size
-                count += 1
-            except Exception:
-                continue
-    return jsonify({'count': count, 'total_bytes': total})
-
-@app.get('/api/cache/llm/list')
-def api_cache_list():
+@app.get('/api/status')
+def api_status():
+    force_models = bool(request.args.get('force_models'))
+    data = _read_jobs_status()
+    workers = []
+    for wid, w in WORKERS.items():
+        proc = w.get('proc')
+        workers.append({
+            'id': wid,
+            'pid': proc.pid if proc else None,
+            'running': (proc is not None and proc.poll() is None),
+            'plugins': w.get('plugins'),
+            'batch': w.get('batch'),
+            'watch': w.get('watch'),
+            'started_at': w.get('started_at'),
+            'log_tail': list(w.get('log', deque()))[-50:],
+            'current': w.get('current'),
+        })
+    data['workers'] = workers
+    if workers:
+        data['worker'] = workers[0]
     try:
-        limit = int(request.args.get('limit', '200'))
+        cfg = load_configs()
+        data['plugin_defaults'] = cfg.get('plugins', {})
     except Exception:
-        limit = 200
-    items = []
-    if CACHE_DIR.exists():
-        files = sorted(CACHE_DIR.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
-        for p in files[:limit]:
-            try:
-                st = p.stat()
-                items.append({'name': p.name, 'size': st.st_size, 'mtime': dt.datetime.fromtimestamp(st.st_mtime).isoformat(sep=' ')})
-            except Exception:
-                continue
-    return jsonify({'items': items})
+        data['plugin_defaults'] = {}
+    data['llm'] = _llm_health(force=force_models)
+    return jsonify(data)
 
-@app.post('/api/cache/llm/clear')
-def api_cache_clear():
-    cleared = 0
-    if CACHE_DIR.exists():
-        for p in CACHE_DIR.glob('*.json'):
-            try:
-                p.unlink(); cleared += 1
-            except Exception:
-                continue
-    return jsonify({'ok': True, 'cleared': cleared})
+@app.get('/')
+def root():
+    index_path = pathlib.Path(app.static_folder) / 'index.html'
+    if not index_path.exists():
+        return jsonify({'error':'index not found', 'path': str(index_path)}), 500
+    return send_from_directory(app.static_folder, 'index.html')
+
+@app.get('/<path:path>')
+def static_proxy(path):
+    return send_from_directory(app.static_folder, path)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5051, debug=False, threaded=True)
 

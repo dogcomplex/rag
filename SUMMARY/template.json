@@ -1,0 +1,19 @@
+{ "name": "concats",
+  "description": "",
+  "concat": {
+    "max_file_size_mb": 1.5,
+    "total_size_hard_cap_mb": 20.0,
+    "max_individual_file_size_mb": 1.0,
+    "skip_binary_files": true,
+    "excluded_files": ["concat.py", "package.json", "package-lock.json", "output.txt", ".babelrc", ".gitignore", "LICENSE", "examples/beta_key_mailer/paradise_lost.txt", "yarn.lock"],
+    "excluded_files_with_tree": ["styles.css"],
+    "excluded_file_types": [".zip", ".png", ".jpg", ".jpeg", ".sh", ".patch", ".gz", ".log", ".safetensors", ".pyc", ".pyco", ".parquet", ".so", ".dll", ".lib", ".a", ".dylib", ".pdb", ".o", ".exe", ".ogg", ".wav", ".psd", ".ttf", ".ico", ".mpg", ".bin", ".obj", ".dat", ".pak", ".bk2", ".mp3", ".mov", ".mp4", ".webm", ".gif", ".zip", ".tar", ".rar", ".7z", ".iso", ".img", ".doc", ".docx", ".pdf", ".xls", ".xlsx", ".ppt", ".pptx", ".swc", ".fla", ".swf", ".svg", ".pyc"],
+    "excluded_folders": [
+      "SUMMARY", ".knowledge", "checkpoints", "function_caches", "plots", "bin", "redist", ".git", ".idea", ".ignore", "node_modules", "myenv", ".vs", ".vscode", "venv", "concats", "concatenator", "__pycache__", "vllm", "data", "dist", "build", "coverage"
+    ],
+    "excluded_contents_folder": [".git", "__tests__", "venv", "concats"]
+  },
+  "target": "./",
+  "output": "SUMMARY/summaries"
+}
+

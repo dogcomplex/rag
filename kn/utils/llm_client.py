@@ -33,6 +33,9 @@ def chat(prompt: str, max_tokens=512, temperature=0.2, overrides: dict|None=None
     if overrides:
         merged.update(overrides)
     BASE, KEY, MODEL, TIMEOUT = _settings(merged)
+    max_tokens = merged.get('max_tokens', max_tokens)
+    temperature = merged.get('temperature', temperature)
+    top_p = merged.get('top_p')
     url = f"{BASE}/chat/completions"
     headers = {'Authorization': f"Bearer {KEY}", 'Content-Type':'application/json'}
     payload = {
@@ -41,6 +44,8 @@ def chat(prompt: str, max_tokens=512, temperature=0.2, overrides: dict|None=None
         'max_tokens': max_tokens,
         'temperature': temperature,
     }
+    if top_p is not None:
+        payload['top_p'] = top_p
     # optional local model directory hint (vLLM/OAI adapters may ignore it)
     local_models = os.getenv('LOCAL_MODELS_DIR')
     if local_models:
