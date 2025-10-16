@@ -5,24 +5,56 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>GraphRAG Dashboard</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 0; padding: 0; }
-    header { padding: 12px 16px; background: #111; color: #fff; display: flex; align-items: center; gap: 12px; }
+    :root {
+      --bg: #0b111b;
+      --header-bg: #0f172a;
+      --panel: #161f2e;
+      --panel-alt: #1e2737;
+      --border: #263342;
+      --text: #e6edf7;
+      --subtle: #94a3b8;
+      --accent: #3b82f6;
+      --accent-strong: #60a5fa;
+      --danger: #f87171;
+      --success: #34d399;
+      --input-bg: #0f172a;
+      --input-border: #1f2937;
+      --table-row: #101827;
+      --table-row-alt: #141d2c;
+    }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+    header { padding: 12px 16px; background: var(--header-bg); color: var(--text); display: flex; align-items: center; gap: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
     header h1 { margin: 0; font-size: 16px; font-weight: 600; }
     main { padding: 16px; display: grid; grid-template-columns: 320px 1fr; gap: 16px; }
-    .panel { border: 1px solid #ddd; border-radius: 8px; padding: 12px; background: #fafafa; }
+    .panel { border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--panel); box-shadow: 0 2px 12px rgba(0,0,0,0.25); }
     .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; }
-    .btn { padding: 6px 10px; border: 1px solid #ccc; border-radius: 6px; background: #fff; cursor: pointer; }
-    .btn.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+    .btn { padding: 6px 10px; border: 1px solid var(--input-border); border-radius: 6px; background: var(--input-bg); color: var(--text); cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease; }
+    .btn:hover { background: var(--panel-alt); border-color: var(--accent); }
+    .btn.primary { background: var(--accent); color: #0b1220; border-color: var(--accent); }
+    .btn.primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
     table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 6px 8px; border-bottom: 1px solid #eee; text-align: left; font-size: 13px; }
-    h3 { margin: 0 0 8px 0; font-size: 14px; }
-    small { color: #666; }
+    th, td { padding: 6px 8px; border-bottom: 1px solid rgba(148, 163, 184, 0.2); text-align: left; font-size: 13px; }
+    thead th { color: var(--subtle); font-weight: 500; text-transform: uppercase; letter-spacing: 0.02em; background: rgba(15, 23, 42, 0.6); }
+    tbody tr { background: var(--table-row); }
+    tbody tr:nth-child(2n) { background: var(--table-row-alt); }
+    h3 { margin: 0 0 8px 0; font-size: 14px; color: var(--text); }
+    small { color: var(--subtle); }
     ul { margin: 6px 0 0 18px; }
-    .badge { background:#eee; padding:2px 6px; border-radius:10px; font-size:11px; }
+    .badge { background: rgba(59, 130, 246, 0.2); color: var(--accent-strong); padding:2px 6px; border-radius:10px; font-size:11px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .ok { color: #15803d; }
-    .err { color: #b91c1c; }
+    .ok { color: var(--success); }
+    .err { color: var(--danger); }
+    input, select, textarea { background: var(--input-bg); color: var(--text); border: 1px solid var(--input-border); border-radius: 6px; padding: 4px 6px; }
+    input::placeholder, textarea::placeholder { color: rgba(148, 163, 184, 0.6); }
+    details { background: var(--panel-alt); border-radius: 8px; border: 1px solid var(--border); padding: 8px; }
+    details summary { cursor: pointer; color: var(--text); }
+    pre { background: var(--panel-alt); color: var(--text); border-radius: 6px; padding: 8px; }
+    select { min-height: 28px; }
+    option { background: var(--input-bg); color: var(--text); }
+    a { color: var(--accent-strong); }
+    a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -113,8 +145,8 @@
         <button class="btn" onclick="startGateway()">Start Gateway</button>
         <button class="btn" onclick="stopGateway()">Stop Gateway</button>
       </div>
-      <pre id="gateway_status" class="mono" style="margin-top:8px;background:#111;color:#ddd;padding:8px;border-radius:6px;max-height:160px;overflow:auto;"></pre>
-      <pre id="worker_test_result" class="mono" style="margin-top:8px;background:#111;color:#ddd;padding:8px;border-radius:6px;max-height:160px;overflow:auto;"></pre>
+      <pre id="gateway_status" class="mono" style="margin-top:8px;background:var(--panel-alt);color:var(--text);padding:8px;border-radius:6px;max-height:160px;overflow:auto;border:1px solid var(--border);"></pre>
+      <pre id="worker_test_result" class="mono" style="margin-top:8px;background:var(--panel-alt);color:var(--text);padding:8px;border-radius:6px;max-height:160px;overflow:auto;border:1px solid var(--border);"></pre>
       <div id="workers_list" style="margin-top:8px;"></div>
     </section>
 
@@ -148,7 +180,7 @@
         <select id="queue_clear_mode"><option value="non-done">non-done</option><option value="pending">pending</option><option value="reset-running">reset running→pending</option><option value="reset-running-counter">reset running→pending + reset counter</option><option value="all">all</option></select>
         <button class="btn" onclick="clearQueue()">Clear Queue</button>
       </div>
-        <div id="queue_list" style="max-height:240px; overflow:auto; border:1px solid #eee; border-radius:6px; padding:6px;"></div>
+        <div id="queue_list" style="max-height:240px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:6px; background:var(--panel-alt);"></div>
       </details>
       <details style="margin:8px 0;">
         <summary><b>LLM cache</b> <small>(prompt-level)</small></summary>
@@ -163,12 +195,12 @@
           <input id="cache_limit" type="number" value="200" style="width:90px" />
           <button class="btn" onclick="loadCacheList()">List</button>
         </div>
-        <div id="cache_list" style="max-height:240px; overflow:auto; border:1px solid #eee; border-radius:6px; padding:6px;"></div>
+        <div id="cache_list" style="max-height:240px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:6px; background:var(--panel-alt);"></div>
       </details>
       <details style="margin:8px 0;">
         <summary><b>Failed Jobs</b></summary>
         <button class="btn" onclick="loadFailedJobs()">Refresh Failed</button>
-        <div id="failed_jobs" style="margin-top:8px; max-height:200px; overflow:auto; border:1px solid #ddd; border-radius:6px; padding:6px;"></div>
+        <div id="failed_jobs" style="margin-top:8px; max-height:200px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:6px; background:var(--panel-alt);"></div>
       </details>
       <div class="row" style="justify-content:space-between;align-items:center;">
         <h3>Attributes Coverage</h3>
@@ -180,7 +212,7 @@
       <h3 style="margin-top:16px;">Domains</h3>
       <div id="domains"></div>
       <h3 style="margin-top:16px;">Worker Log (tail)</h3>
-      <pre id="worker_log" style="background:#111;color:#ddd;padding:8px;border-radius:6px;max-height:200px;overflow:auto;"></pre>
+      <pre id="worker_log" style="background:var(--panel-alt);color:var(--text);padding:8px;border-radius:6px;max-height:200px;overflow:auto;border:1px solid var(--border);"></pre>
 
       <h3 style="margin-top:16px;">Documents</h3>
       <div class="row" style="margin-bottom:8px;">
@@ -460,7 +492,7 @@
               + `</tr>`);
             const key = `${k}|${doc_id}`;
             const hasFull = window.__ATTR_ITEM_CACHE__[key] != null;
-            rows.push(`<tr id="cov_full_${k}_${doc_id}" style="display:${docOpen?'':'none'};"><td></td><td colspan=10><pre style="white-space:pre-wrap;background:#f6f6f6;padding:8px;border-radius:6px;" id="cov_pre_${k}_${doc_id}">${hasFull? escapeHtml(JSON.stringify(window.__ATTR_ITEM_CACHE__[key], null, 2)) : ''}</pre></td></tr>`);
+            rows.push(`<tr id="cov_full_${k}_${doc_id}" style="display:${docOpen?'':'none'};"><td></td><td colspan=10><pre style="white-space:pre-wrap;background:var(--panel-alt);padding:8px;border-radius:6px;border:1px solid var(--border);" id="cov_pre_${k}_${doc_id}">${hasFull? escapeHtml(JSON.stringify(window.__ATTR_ITEM_CACHE__[key], null, 2)) : ''}</pre></td></tr>`);
           }
         }
       }
@@ -551,7 +583,7 @@
               + `<td colspan=2><span id="doc_attr_arrow_${d.doc_id}_${plug}">${attrOpen?'▾':'›'}</span> ${plug}</td>`
               + `<td></td>`
               + `</tr>`);
-            rows.push(`<tr id="doc_attr_full_${d.doc_id}_${plug}" style="display:${attrOpen?'':'none'};"><td></td><td colspan=3><pre style="white-space:pre-wrap;background:#f6f6f6;padding:8px;border-radius:6px;" id="doc_attr_pre_${d.doc_id}_${plug}"></pre></td></tr>`);
+            rows.push(`<tr id="doc_attr_full_${d.doc_id}_${plug}" style="display:${attrOpen?'':'none'};"><td></td><td colspan=3><pre style="white-space:pre-wrap;background:var(--panel-alt);padding:8px;border-radius:6px;border:1px solid var(--border);" id="doc_attr_pre_${d.doc_id}_${plug}"></pre></td></tr>`);
           }
           // Chunk-level attributes (currently exposing chunk-summary)
           const cplug = 'chunk-summary';
@@ -561,7 +593,7 @@
             + `<td colspan=2><span id="doc_chunk_attr_arrow_${d.doc_id}_${cplug}">${cOpen?'▾':'›'}</span> ${cplug} <span style="opacity:.65;">(per-chunk)</span></td>`
             + `<td></td>`
             + `</tr>`);
-          rows.push(`<tr id="doc_chunk_attr_full_${d.doc_id}_${cplug}" style="display:${cOpen?'':'none'};"><td></td><td colspan=3><div style="background:#f6f6f6;padding:8px;border-radius:6px;max-height:260px;overflow:auto;" id="doc_chunk_attr_div_${d.doc_id}_${cplug}"></div></td></tr>`);
+          rows.push(`<tr id="doc_chunk_attr_full_${d.doc_id}_${cplug}" style="display:${cOpen?'':'none'};"><td></td><td colspan=3><div style="background:var(--panel-alt);padding:8px;border-radius:6px;max-height:260px;overflow:auto;border:1px solid var(--border);" id="doc_chunk_attr_div_${d.doc_id}_${cplug}"></div></td></tr>`);
         }
       });
       rows.push('</tbody></table>');
@@ -662,9 +694,10 @@
       const job = await r.json();
       const pre = document.createElement('pre');
       pre.style.whiteSpace = 'pre-wrap';
-      pre.style.background = '#f6f6f6';
+      pre.style.background = 'var(--panel-alt)';
       pre.style.padding = '8px';
       pre.style.borderRadius = '6px';
+      pre.style.border = '1px solid var(--border)';
       pre.textContent = JSON.stringify(job, null, 2);
       const root = document.getElementById('failed_jobs');
       root.innerHTML = '';
