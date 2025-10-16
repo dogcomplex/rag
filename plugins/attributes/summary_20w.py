@@ -60,7 +60,7 @@ for line in sys.stdin:
         trimmed = _trim_text(text, limit)
         prompt = _safe_text(f"Summarize the following in ~20 words, terse and factual. If truncated, focus on the excerpt provided.\n\n{trimmed}")
         try:
-            out = chat(prompt, max_tokens=100, temperature=0.1)
+            out = chat(prompt, max_tokens=100, temperature=0.1, plugin_name='summary-20w', overwrite=True)
             out = _safe_text(out)
             _write_attr(doc_id, out)
             print(json.dumps({"status": "ok", "doc_id": doc_id, "length": len(out)}, ensure_ascii=False))

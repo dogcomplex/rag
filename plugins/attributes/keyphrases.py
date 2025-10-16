@@ -62,7 +62,7 @@ for line in sys.stdin:
         trimmed = _trim_text(text, limit)
         prompt = PROMPT.format(body=trimmed)
         try:
-            out = chat(prompt, max_tokens=120, temperature=0.2)
+            out = chat(prompt, max_tokens=120, temperature=0.2, plugin_name='keyphrases', overwrite=True)
             out = _safe_text(out)
             tags = [t.strip() for t in out.split(',') if t.strip()]
             _write_attr(doc_id, tags)

@@ -24,7 +24,7 @@ for line in sys.stdin:
         tpl = f"Summarize the text in ~{words} words, terse and factual."
         max_tokens = int(words) * 3
     prompt = tpl + "\n\n" + text
-    out = chat(prompt, max_tokens=max_tokens, temperature=0.2)
+    out = chat(prompt, max_tokens=max_tokens, temperature=0.2, plugin_name='summaries', overwrite=True)
     (OUTDIR / f"{job['doc_id']}_{mode}.json").write_text(json.dumps({
         'doc_id': job['doc_id'], 'attribute': f'summary-{mode}', 'value': out.strip(), 'mode': mode, 'confidence': 0.7
     }, ensure_ascii=False), encoding='utf-8')

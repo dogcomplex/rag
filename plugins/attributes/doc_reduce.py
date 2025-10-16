@@ -39,7 +39,7 @@ for line in sys.stdin:
     if not chunks:
         continue
     ordered = '\n- '.join([''] + [c.get('value','') for c in chunks])
-    raw = chat(PROMPT.format(body=ordered), max_tokens=360, temperature=0.2, plugin_name='doc-reduce')
+    raw = chat(PROMPT.format(body=ordered), max_tokens=360, temperature=0.2, plugin_name='doc-reduce', overwrite=True)
     try:
         data = json.loads(raw)
     except Exception:

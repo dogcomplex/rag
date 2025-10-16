@@ -22,7 +22,8 @@ for line in sys.stdin:
             temperature=payload.get('temperature', 0.2),
             overrides=payload.get('llm'),
             cache_key=f"summary-short|{doc_id}",
-            plugin_name='summary-short'
+            plugin_name='summary-short',
+            overwrite=True
         )
     except Exception as exc:
         print(json.dumps({'status': 'error', 'doc_id': doc_id, 'error': str(exc)}, ensure_ascii=False))

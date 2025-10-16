@@ -26,7 +26,7 @@ for line in sys.stdin:
         "Prefer domain-relevant terms.\n\n"
         f"TEXT:\n{text}\n"
     )
-    out = submit_chat_request(prompt, max_tokens=64, temperature=0.2, plugin_name='topic-tags')
+    out = submit_chat_request(prompt, max_tokens=64, temperature=0.2, plugin_name='topic-tags', overwrite=True)
     out = _safe_text(out)
     OUTDIR.joinpath(f"{job['doc_id']}.json").write_text(json.dumps({
         "doc_id": job['doc_id'],

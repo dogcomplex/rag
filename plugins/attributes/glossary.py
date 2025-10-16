@@ -59,7 +59,7 @@ for line in sys.stdin:
     for limit in _ATTEMPT_LIMITS:
         trimmed = _trim_text(text, limit)
         try:
-            out = chat(PROMPT + "\n\n" + trimmed, max_tokens=300, temperature=0.2)
+            out = chat(PROMPT + "\n\n" + trimmed, max_tokens=300, temperature=0.2, plugin_name='glossary', overwrite=True)
             out = _safe_text(out)
             _write_attr(doc_id, out)
             print(json.dumps({'status': 'ok', 'doc_id': doc_id}))

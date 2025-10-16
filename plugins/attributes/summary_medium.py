@@ -60,7 +60,7 @@ for line in sys.stdin:
         trimmed = _trim_text(text, limit)
         prompt = PROMPT.format(body=trimmed)
         try:
-            out = chat(prompt, max_tokens=380, temperature=0.2, plugin_name='summary-medium')
+            out = chat(prompt, max_tokens=380, temperature=0.2, plugin_name='summary-medium', overwrite=True)
             out = _safe_text(out)
             _write_attr(doc_id, out)
             print(json.dumps({'status': 'ok', 'doc_id': doc_id, 'length': len(out)}, ensure_ascii=False))

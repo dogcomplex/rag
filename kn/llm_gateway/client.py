@@ -33,6 +33,8 @@ def submit_chat_request(
     plugin_name: Optional[str] = None,
     cfg: Optional[Dict[str, Any]] = None,
     wait: bool = True,
+    force: bool = False,
+    overwrite: bool = False,
 ) -> str:
     cfg = cfg or load_configs()
     merged_overrides = _merge_overrides(cfg, overrides, plugin_name)
@@ -57,13 +59,19 @@ def submit_chat_request(
     ck = cache_key or f"{service_name}|{model_name}|{max_tokens}|{temperature}|{prompt}"
     cached = get_cached_response(ck)
     if cached is not None:
-        return cached
+        if not force and not overwrite:
+            return cached
 
     req_id = str(uuid.uuid4())
     metadata = {
         "cache_key": ck,
         "plugin": plugin_name,
     }
+    if force or overwrite:
+        metadata = dict(metadata)
+        metadata['force'] = force or overwrite
+        if overwrite:
+            metadata['overwrite'] = True
     request = GatewayRequest(request_id=req_id, service=service_name, model=model_name, payload=payload, metadata=metadata)
     storage = _storage(cfg)
     storage.enqueue(request)

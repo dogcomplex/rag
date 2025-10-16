@@ -14,7 +14,7 @@ for line in sys.stdin:
     text = job.get('text','') or ''
     if not text.strip():
         continue
-    out = chat(PROMPT + "\n\n" + text, max_tokens=600, temperature=0.2)
+    out = chat(PROMPT + "\n\n" + text, max_tokens=600, temperature=0.2, plugin_name='faq-pairs', overwrite=True)
     (OUTDIR / f"{job['doc_id']}.json").write_text(json.dumps({
         'doc_id': job['doc_id'], 'attribute': 'faq-pairs', 'value': out.strip(), 'confidence': 0.6
     }, ensure_ascii=False), encoding='utf-8')

@@ -26,7 +26,7 @@ for line in sys.stdin:
     # Allow per-plugin model override via payload
     overrides = (job.get('payload') or {}).get('llm') or {}
     # keep under tighter limits to reduce timeouts
-    raw = chat(PROMPT.format(body=text), max_tokens=400, temperature=0.2, overrides=overrides, plugin_name='multi-basic')
+    raw = chat(PROMPT.format(body=text), max_tokens=400, temperature=0.2, overrides=overrides, plugin_name='multi-basic', overwrite=True)
     data = {}
     try:
         data = json.loads(raw)

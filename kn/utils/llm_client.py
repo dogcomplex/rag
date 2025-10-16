@@ -14,6 +14,8 @@ def chat(
     overrides: Optional[Dict[str, Any]] = None,
     cache_key: Optional[str] = None,
     plugin_name: Optional[str] = None,
+    force: bool = False,
+    overwrite: bool = False,
 ) -> str:
     """Proxy chat helper used by legacy code paths."""
 
@@ -24,6 +26,8 @@ def chat(
         overrides=overrides,
         cache_key=cache_key,
         plugin_name=plugin_name,
+        force=force,
+        overwrite=overwrite,
     )
 
 

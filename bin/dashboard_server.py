@@ -339,7 +339,7 @@ def api_enqueue():
     count = 0
     for d in doc_ids:
         for p in plugins:
-            enqueue(cfg, p, d, payload)
+            enqueue(cfg, p, d, dict(payload))
             count += 1
     return jsonify({'enqueued': count})
 
