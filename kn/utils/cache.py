@@ -1,11 +1,12 @@
 import hashlib, json, pathlib
+from typing import Any, Optional
 
 CACHE_DIR = pathlib.Path('.knowledge/cache/llm')
 
 def _hash_key(s: str) -> str:
     return hashlib.sha1(s.encode('utf-8', errors='ignore')).hexdigest()
 
-def get_cached_response(key: str) -> str|None:
+def get_cached_response(key: str) -> Optional[str]:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     p = CACHE_DIR / (_hash_key(key) + '.json')
     if not p.exists():

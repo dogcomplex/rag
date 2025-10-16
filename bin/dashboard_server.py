@@ -1,9 +1,12 @@
+import copy
 import json, pathlib, threading, time, os, sqlite3, collections, datetime as dt, subprocess, sys
 import yaml
 from flask import Flask, send_from_directory, jsonify, request
 
 from kn.config import load_configs
 from kn.jobs_sqlite import ensure_db, enqueue
+from kn.llm_gateway.client import submit_generic_request
+from kn.llm_gateway.storage import QueueStorage
 
 ROOT = pathlib.Path('.knowledge')
 BASE_DIR = pathlib.Path(__file__).resolve().parent
@@ -16,6 +19,80 @@ from collections import deque
 import itertools, datetime
 _WORKER_ID_GEN = itertools.count(1)
 WORKERS: dict[int, dict] = {}
+GATEWAY = {
+    'proc': None,
+    'log': deque(maxlen=500),
+    'service': None,
+    'started_at': None,
+}
+
+
+def _gateway_running() -> bool:
+    proc = GATEWAY.get('proc')
+    return proc is not None and proc.poll() is None
+
+
+def _spawn_gateway(service: str | None = None, log_level: str = 'INFO') -> bool:
+    if _gateway_running():
+        return False
+    cfg = load_configs()
+    service_name = service or cfg.get('llm', {}).get('service', 'lmstudio')
+    args = [sys.executable, '-X', 'utf8', 'bin/llm_gateway_service.py']
+    if log_level:
+        args.extend(['--log-level', log_level])
+    if service_name:
+        args.extend(['--service', service_name])
+    env = os.environ.copy()
+    env['PYTHONPATH'] = str(pathlib.Path.cwd())
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    GATEWAY['proc'] = proc
+    GATEWAY['service'] = service_name
+    GATEWAY['started_at'] = datetime.datetime.now().isoformat(timespec='seconds')
+    GATEWAY['log'].clear()
+
+    def _reader():
+        try:
+            for line in proc.stdout:
+                GATEWAY['log'].append(line.rstrip())
+        except Exception:
+            pass
+
+    threading.Thread(target=_reader, daemon=True).start()
+    return True
+
+
+def _stop_gateway() -> bool:
+    proc = GATEWAY.get('proc')
+    if not proc:
+        return False
+    if proc.poll() is None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    GATEWAY['proc'] = None
+    GATEWAY['started_at'] = None
+    return True
+
+
+def _gateway_status() -> dict:
+    cfg = load_configs()
+    service_name = GATEWAY.get('service') or cfg.get('llm', {}).get('service', 'lmstudio')
+    queue_cfg = cfg.get('llm_gateway', {})
+    queue_path = pathlib.Path(queue_cfg.get('queue_path', str(ROOT / 'queues' / 'llm_gateway.sqlite')))
+    stats = {}
+    try:
+        storage = QueueStorage(queue_path)
+        stats = storage.stats(service_name if service_name else None)
+    except Exception:
+        stats = {}
+    return {
+        'running': _gateway_running(),
+        'service': service_name,
+        'started_at': GATEWAY.get('started_at'),
+        'queue': stats,
+        'log_tail': list(GATEWAY['log'])[-50:],
+    }
 
 CHUNKS_DIR = pathlib.Path('.knowledge/indexes/chunks')
 ATTR_DIR = pathlib.Path('.knowledge/indexes/attributes')
@@ -151,25 +228,42 @@ def _db_summary(minutes_recent=60):
 LLM_MODELS_CACHE = {'data': None, 'ts': 0}
 
 def _llm_health(force: bool=False, ttl_sec: int=600):
-    from dotenv import load_dotenv
-    import requests
-    load_dotenv(override=False)
-    base = os.getenv('OPENAI_BASE_URL') or 'http://127.0.0.1:12345/v1'
     now = time.time()
     if not force and LLM_MODELS_CACHE['data'] and (now - LLM_MODELS_CACHE['ts'] < ttl_sec):
-        d = dict(LLM_MODELS_CACHE['data'])
-        d['endpoint'] = base
-        return d
+        return copy.deepcopy(LLM_MODELS_CACHE['data'])
+
+    cfg = load_configs()
+    service = cfg.get('llm', {}).get('service', 'lmstudio')
+    service_cfg = (cfg.get('llm_services') or {}).get(service, {})
+    model = service_cfg.get('default_model') or cfg.get('llm', {}).get('model')
     try:
-        r = requests.get(base.rstrip('/') + '/models', timeout=5)
-        ok = r.status_code == 200
-        models = r.json().get('data', []) if ok else []
-        data = {'reachable': ok, 'endpoint': base, 'models': [m.get('id') for m in models[:5]]}
+        wait_timeout = float((cfg.get('llm_gateway') or {}).get('health_timeout_sec', 15))
+        resp = submit_generic_request(
+            service=service,
+            payload={'action': 'health', 'model': model},
+            metadata={'source': 'dashboard.health'},
+            cfg=cfg,
+            wait=True,
+            timeout_override=wait_timeout,
+        )
+        raw = resp.raw or {}
+        data = {
+            'reachable': resp.success,
+            'endpoint': service_cfg.get('base_url') or cfg.get('llm', {}).get('base_url'),
+            'models': (raw.get('available_models') or [])[:5],
+        }
+        if not resp.success:
+            data['error'] = resp.error or raw.get('error')
         LLM_MODELS_CACHE['data'] = data
         LLM_MODELS_CACHE['ts'] = now
         return data
-    except Exception:
-        data = {'reachable': False, 'endpoint': base, 'models': []}
+    except Exception as exc:
+        data = {
+            'reachable': False,
+            'endpoint': service_cfg.get('base_url') or cfg.get('llm', {}).get('base_url'),
+            'models': [],
+            'error': str(exc),
+        }
         LLM_MODELS_CACHE['data'] = data
         LLM_MODELS_CACHE['ts'] = now
         return data
@@ -185,6 +279,7 @@ def _read_jobs_status():
         'attributes_coverage': _attribute_coverage(plugins, doc_ids),
         'queue': _db_summary(60),
         'llm': _llm_health(),
+        'gateway': _gateway_status(),
     }
     return data
 
@@ -271,6 +366,25 @@ def api_worker_stop():
         return jsonify({'stopped_all': True})
     ok = _stop_worker_id(int(wid))
     return jsonify({'stopped': ok, 'worker_id': wid})
+
+
+@app.post('/api/gateway/start')
+def api_gateway_start():
+    body = request.get_json(force=True, silent=True) or {}
+    service = body.get('service')
+    log_level = body.get('log_level', 'INFO')
+    started = _spawn_gateway(service=service, log_level=log_level)
+    status = _gateway_status()
+    status['started'] = started
+    return jsonify(status)
+
+
+@app.post('/api/gateway/stop')
+def api_gateway_stop():
+    stopped = _stop_gateway()
+    status = _gateway_status()
+    status['stopped'] = stopped
+    return jsonify(status)
 
 @app.get('/api/workers')
 def api_workers():
@@ -574,6 +688,7 @@ def _stop_worker_id(wid: int) -> bool:
 def api_status():
     force_models = bool(request.args.get('force_models'))
     data = _read_jobs_status()
+    data['gateway'] = _gateway_status()
     workers = []
     for wid, w in WORKERS.items():
         proc = w.get('proc')

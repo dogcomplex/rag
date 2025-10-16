@@ -7,6 +7,11 @@ import pathlib
 import sqlite3
 import sys
 
+# Ensure project root is on sys.path when invoked from subdirectories
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from dotenv import load_dotenv
 import requests
 

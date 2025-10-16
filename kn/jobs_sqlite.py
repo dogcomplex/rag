@@ -73,6 +73,18 @@ def reset_status(cfg, job_ids, status='pending'):
     con.execute(f"UPDATE jobs SET status=? WHERE id IN ({placeholders})", (status, *job_ids))
     con.commit(); con.close()
 
+def reset_running_jobs(cfg, status='pending'):
+    con = sqlite3.connect(_db_path(cfg))
+    try:
+        cur = con.cursor()
+        ids = [row[0] for row in cur.execute("select id from jobs where status='running'").fetchall()]
+    finally:
+        con.close()
+    if not ids:
+        return []
+    reset_status(cfg, ids, status=status)
+    return ids
+
 def list_pending_plugins(cfg):
     con = sqlite3.connect(_db_path(cfg))
     rows = [r[0] for r in con.execute("select distinct plugin from jobs where status='pending'").fetchall()]
@@ -98,6 +110,14 @@ def get_counter(cfg, name: str) -> int:
     row = cur.execute("select value from counters where name=?", (name,)).fetchone()
     con.close()
     return row[0] if row else 0
+
+def reset_counter(cfg, name: str):
+    con = sqlite3.connect(_db_path(cfg))
+    try:
+        con.execute("UPDATE counters SET value=0 WHERE name=?", (name,))
+        con.commit()
+    finally:
+        con.close()
 
 def try_acquire(cfg, name: str) -> bool:
     con = sqlite3.connect(_db_path(cfg))

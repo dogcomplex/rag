@@ -102,6 +102,18 @@
         <button class="btn" onclick="stopWorkerAll()">Stop All</button>
         <button class="btn" onclick="testWorker()">Test Connection</button>
       </div>
+      <hr/>
+      <h3>Gateway</h3>
+      <div class="row" style="margin-bottom:8px;">
+        <input id="gateway_service" placeholder="service (default lmstudio)" style="flex:1" />
+        <label>log level</label>
+        <input id="gateway_loglevel" value="INFO" style="width:90px" />
+      </div>
+      <div class="row">
+        <button class="btn" onclick="startGateway()">Start Gateway</button>
+        <button class="btn" onclick="stopGateway()">Stop Gateway</button>
+      </div>
+      <pre id="gateway_status" class="mono" style="margin-top:8px;background:#111;color:#ddd;padding:8px;border-radius:6px;max-height:160px;overflow:auto;"></pre>
       <pre id="worker_test_result" class="mono" style="margin-top:8px;background:#111;color:#ddd;padding:8px;border-radius:6px;max-height:160px;overflow:auto;"></pre>
       <div id="workers_list" style="margin-top:8px;"></div>
     </section>
@@ -234,6 +246,22 @@
       await fetch('/api/worker/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
       await refresh();
     }
+    async function startGateway(){
+      const service = (document.getElementById('gateway_service').value||'').trim();
+      const logLevel = (document.getElementById('gateway_loglevel').value||'INFO').trim() || 'INFO';
+      const body = { log_level: logLevel };
+      if(service){ body.service = service; }
+      const r = await fetch('/api/gateway/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      const data = await r.json();
+      document.getElementById('gateway_status').textContent = JSON.stringify(data, null, 2);
+      await refresh();
+    }
+    async function stopGateway(){
+      const r = await fetch('/api/gateway/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
+      const data = await r.json();
+      document.getElementById('gateway_status').textContent = JSON.stringify(data, null, 2);
+      await refresh();
+    }
     async function testWorker(){
       const out = document.getElementById('worker_test_result');
       try{
@@ -250,6 +278,12 @@
       const llm = document.getElementById('llm');
       llm.innerHTML = `<div>LLM: <span class="${data.llm.reachable?'ok':'err'}">${data.llm.reachable?'reachable':'unreachable'}</span> <span class="mono">${data.llm.endpoint}</span></div>`
         + (data.llm.models && data.llm.models.length? `<div><small>models: ${data.llm.models.join(', ')}</small></div>`: '');
+      if(data.llm.error){ llm.innerHTML += `<div class="err"><small>${data.llm.error}</small></div>`; }
+
+      const gatewayEl = document.getElementById('gateway_status');
+      if(gatewayEl && data.gateway){
+        gatewayEl.textContent = JSON.stringify(data.gateway, null, 2);
+      }
 
       const q = data.queue||{};
       const qdiv = document.getElementById('queue');
