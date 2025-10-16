@@ -1,4 +1,4 @@
-import argparse, time, json, threading
+import argparse, time, json, threading, pathlib
 from kn.config import load_configs
 from kn.jobs_sqlite import (
     ensure_db,
@@ -14,6 +14,30 @@ from kn.jobs_sqlite import (
     reset_running_jobs,
     reset_counter,
 )
+
+
+ATTR_ROOT = pathlib.Path('.knowledge/indexes/attributes')
+
+
+def _job_output_exists(plugin: str, job: dict) -> bool:
+    payload = job.get('payload') or {}
+    if payload.get('overwrite') or payload.get('force'):
+        return False
+    doc_id = job.get('doc_id')
+    plugin_dir = ATTR_ROOT / plugin
+    if plugin == 'chunk-summary':
+        chunk_id = payload.get('chunk_id')
+        if not chunk_id:
+            return False
+        return plugin_dir.joinpath(f"{chunk_id}.json").exists()
+    if plugin == 'summaries':
+        mode = payload.get('mode')
+        if not mode or not doc_id:
+            return False
+        return plugin_dir.joinpath(f"{doc_id}_{mode}.json").exists()
+    if not doc_id:
+        return False
+    return plugin_dir.joinpath(f"{doc_id}.json").exists()
 
 def run_once(plugins, cfg, batch_size=16):
     ensure_db(cfg)
@@ -43,6 +67,15 @@ def run_once(plugins, cfg, batch_size=16):
     for j in jobs:
         by_plugin.setdefault(j["plugin"], []).append(j)
     for plugin, items in by_plugin.items():
+        remaining = []
+        for j in items:
+            if _job_output_exists(plugin, j):
+                ack_job(cfg, j["id"])
+                print(f"[enrich] {plugin}: doc {j.get('doc_id')} already has output; skipping (no overwrite)")
+            else:
+                remaining.append(j)
+        if not remaining:
+            continue
         acquired = try_acquire(cfg, 'llm_concurrency')
         if not acquired:
             print(f"[enrich] {plugin}: concurrency limit reached, skipping batch")
@@ -56,7 +89,7 @@ def run_once(plugins, cfg, batch_size=16):
             continue
         inp_lines = []
         doc_ids = []
-        for j in items:
+        for j in remaining:
             payload = j.get("payload") or {}
             doc = None
             if payload.get('chunk_id'):
@@ -69,7 +102,7 @@ def run_once(plugins, cfg, batch_size=16):
                 inp_lines.append(json.dumps(merged, ensure_ascii=False))
                 doc_ids.append(j["doc_id"])
         if not inp_lines:
-            for j in items:
+            for j in remaining:
                 fail_and_requeue_job(cfg, j["id"], error_message="no input doc", back_to_pending=False)
             continue
         try:
@@ -115,7 +148,7 @@ def run_once(plugins, cfg, batch_size=16):
                     proc.communicate(timeout=1)
                 except Exception:
                     pass
-                for j in items:
+                for j in remaining:
                     fail_and_requeue_job(cfg, j["id"], error_message="timeout", back_to_pending=True)
                 continue
             finally:
@@ -124,11 +157,11 @@ def run_once(plugins, cfg, batch_size=16):
             if proc.returncode and proc.returncode != 0:
                 msg = f"exit code {proc.returncode}"
                 print(f"[enrich] {plugin}: {msg}, requeueing batch")
-                for j in items:
+                for j in remaining:
                     fail_and_requeue_job(cfg, j["id"], error_message=msg, back_to_pending=True)
             else:
-                print(f"[enrich] {plugin}: {len(items)} docs processed")
-                for j in items:
+                print(f"[enrich] {plugin}: {len(remaining)} docs processed")
+                for j in remaining:
                     ack_job(cfg, j["id"])
         except Exception as e:
             msg = str(e)[:500]
@@ -136,7 +169,7 @@ def run_once(plugins, cfg, batch_size=16):
             back_to_pending = True
             if 'Context too large' in msg or 'context too large' in msg:
                 back_to_pending = False
-            for j in items:
+            for j in remaining:
                 fail_and_requeue_job(cfg, j["id"], error_message=msg, back_to_pending=back_to_pending)
         finally:
             if acquired:
