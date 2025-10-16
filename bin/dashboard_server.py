@@ -97,6 +97,11 @@ def _gateway_status() -> dict:
 CHUNKS_DIR = pathlib.Path('.knowledge/indexes/chunks')
 ATTR_DIR = pathlib.Path('.knowledge/indexes/attributes')
 DB_PATH = pathlib.Path('.knowledge/queues/jobs.sqlite')
+DOC_ATTR_PLUGINS = [
+    'summary-20w','topic-tags','pii-scan','glossary','requirements',
+    'todo-items','faq-pairs','keyphrases','bridge-candidates','risk-scan',
+    'recent-summary','summary-short','summary-medium','summary-long','summary-outline'
+]
 
 
 def _handle_worker_line(wid: int, line: str):
@@ -303,9 +308,7 @@ def _llm_health(force: bool=False, ttl_sec: int=600):
         return data
 
 def _read_jobs_status():
-    plugins = ['summary-20w','topic-tags','pii-scan','glossary','requirements','todo-items','faq-pairs',
-               'keyphrases','bridge-candidates','risk-scan','recent-summary',
-               'summary-short','summary-medium','summary-long','summary-outline']
+    plugins = DOC_ATTR_PLUGINS
     doc_ids = _unique_doc_ids()
     data = {
         'docs_total': len(doc_ids),
@@ -323,7 +326,15 @@ def api_enqueue():
     body = request.get_json(force=True, silent=True) or {}
     plugins = body.get('plugins') or []
     doc_ids = body.get('doc_ids') or []
-    payload = body.get('payload') or {}
+    payload = body.get('payload')
+    force = body.get('force')
+    overwrite = body.get('overwrite')
+    if payload is None:
+        payload = {}
+    if force is True:
+        payload.setdefault('force', True)
+    if overwrite is True:
+        payload['overwrite'] = True
     cfg = load_configs(); ensure_db(cfg)
     count = 0
     for d in doc_ids:
@@ -349,6 +360,10 @@ def api_plan():
         cmd += ['--summaries-modes', ','.join(args['summaries_modes'])]
     if args.get('map_reduce'):
         cmd += ['--map-reduce']
+    if args.get('doc_ids'):
+        cmd += ['--doc-ids', ','.join(args['doc_ids'])]
+    if args.get('payload_json'):
+        cmd += ['--payload-json', args['payload_json']]
     env = os.environ.copy(); env['PYTHONPATH'] = str(pathlib.Path.cwd())
     subprocess.run(cmd, env=env)
     return jsonify({'ok': True})
@@ -589,11 +604,19 @@ def _first_chunk_for_doc(doc_id: str):
 @app.get('/api/docs')
 def api_docs():
     docs = []
+    total = len(DOC_ATTR_PLUGINS)
     for d in sorted(_unique_doc_ids()):
         rec = _first_chunk_for_doc(d) or {}
         meta = rec.get('meta') or {}
-        docs.append({'doc_id': d, 'domain': meta.get('domain','root'), 'path': meta.get('path','')})
-    return jsonify({'docs': docs})
+        attrs = _attr_paths_for_doc(d)
+        have = sum(1 for plugin in DOC_ATTR_PLUGINS if isinstance(attrs.get(plugin), dict))
+        docs.append({
+            'doc_id': d,
+            'domain': meta.get('domain','root'),
+            'path': meta.get('path',''),
+            'coverage': {'have': have, 'total': total}
+        })
+    return jsonify({'docs': docs, 'coverage_total': total, 'runnable_plugins': DOC_ATTR_PLUGINS})
 
 @app.post('/api/ingest')
 def api_ingest():
@@ -625,11 +648,14 @@ def _attr_paths_for_doc(doc_id: str):
                     except Exception:
                         continue
                 if modes:
-                    out['summaries'] = modes
+                    out['summaries'] = {'modes': modes, 'runnable': False}
             else:
                 f = plugin_dir / f"{doc_id}.json"
                 if f.exists():
-                    out[plugin_dir.name] = {'path': str(f)}
+                    out[plugin_dir.name] = {
+                        'path': str(f),
+                        'runnable': plugin_dir.name in DOC_ATTR_PLUGINS
+                    }
     return out
 
 @app.get('/api/doc/<doc_id>')

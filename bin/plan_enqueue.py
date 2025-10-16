@@ -1,17 +1,24 @@
-import argparse, pathlib, time
+import argparse, pathlib, time, json
 from kn.config import load_configs
 from kn.jobs_sqlite import ensure_db, enqueue
 
 ATTR_ROOT = pathlib.Path('.knowledge/indexes/attributes')
 CHUNKS_DIR = pathlib.Path('.knowledge/indexes/chunks')
 
-def already_has(plugin: str, doc_id: str) -> bool:
+def _plugin_dir_name(plugin: str) -> str:
     if plugin == 'summaries':
+        return 'summaries'
+    return plugin.replace('_', '-')
+
+
+def already_has(plugin: str, doc_id: str) -> bool:
+    dir_name = _plugin_dir_name(plugin)
+    if dir_name == 'summaries':
         pdir = ATTR_ROOT / 'summaries'
         if not pdir.exists():
             return False
         return any(pp.name.startswith(f"{doc_id}_") for pp in pdir.glob(f"{doc_id}_*.json"))
-    p = ATTR_ROOT / plugin / f"{doc_id}.json"
+    p = ATTR_ROOT / dir_name / f"{doc_id}.json"
     return p.exists()
 
 def iter_doc_ids():
@@ -37,6 +44,7 @@ def main():
     ap.add_argument('--summaries-modes', default='short,medium', help='for plugin "summaries", comma list of modes (short,medium,long,outline)')
     ap.add_argument('--payload-json', default=None, help='optional JSON to attach as payload to each job (e.g., {"llm":{"model":"qwen2.5-7b-instruct","timeout":60}})')
     ap.add_argument('--map-reduce', action='store_true', help='enqueue chunk map (chunk-summary) then doc reduce (doc-reduce)')
+    ap.add_argument('--doc-ids', default=None, help='comma-separated list of doc ids; if provided, only these docs are enqueued')
     args = ap.parse_args()
 
     cfg = load_configs()
@@ -52,12 +60,17 @@ def main():
     if args.changed_since_min and args.changed_since_min > 0:
         cutoff = time.time() - args.changed_since_min * 60
 
+    if args.doc_ids:
+        doc_list = list({d.strip(): None for d in args.doc_ids.split(',') if d.strip()}.keys())
+    else:
+        doc_list = list(iter_doc_ids())
+
     count = 0
-    for doc_id in iter_doc_ids():
+    for doc_id in doc_list:
         if cutoff is not None and latest_mtime_for_doc(doc_id) < cutoff:
             continue
         for plugin in plugins:
-            if args.only_missing and already_has(plugin.replace('-', '_'), doc_id):
+            if args.only_missing and already_has(plugin, doc_id):
                 continue
             if plugin == 'summaries' and sum_modes:
                 for mode in sum_modes:

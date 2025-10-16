@@ -31,6 +31,7 @@
     .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; }
     .btn { padding: 6px 10px; border: 1px solid var(--input-border); border-radius: 6px; background: var(--input-bg); color: var(--text); cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease; }
+    .btn.small { padding: 4px 6px; font-size: 12px; }
     .btn:hover { background: var(--panel-alt); border-color: var(--accent); }
     .btn.primary { background: var(--accent); color: #0b1220; border-color: var(--accent); }
     .btn.primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
@@ -53,6 +54,14 @@
     pre { background: var(--panel-alt); color: var(--text); border-radius: 6px; padding: 8px; }
     select { min-height: 28px; }
     option { background: var(--input-bg); color: var(--text); }
+    select option[selected], select option:checked {
+      background-color: rgba(148, 163, 184, 0.28) !important;
+      color: var(--text) !important;
+    }
+    select:focus option[selected], select:focus option:checked {
+      background-color: rgba(59, 130, 246, 0.45) !important;
+      color: var(--text) !important;
+    }
     a { color: var(--accent-strong); }
     a:hover { text-decoration: underline; }
   </style>
@@ -65,8 +74,15 @@
   <main>
     <section class="panel" id="controls">
       <h3>Planner</h3>
-      <div class="row" style="margin-bottom:8px;">
+      <div class="row" style="margin-bottom:4px; align-items:center;">
         <label>Plugins</label>
+        <span style="flex:1"></span>
+        <div class="row" style="gap:4px;">
+          <button class="btn" type="button" onclick="multiSelectAll('plugins')">All</button>
+          <button class="btn" type="button" onclick="multiSelectNone('plugins')">None</button>
+        </div>
+      </div>
+      <div class="row" style="margin-bottom:8px;">
         <select id="plugins" multiple size="10" style="width:100%">
           <option value="multi-basic">multi-basic (batch)</option>
           <option value="doc-skeleton">doc-skeleton</option>
@@ -86,6 +102,17 @@
           <option value="recent-summary">recent-summary</option>
           <option value="pii-scan">pii-scan</option>
         </select>
+      </div>
+      <div class="row" style="margin-bottom:4px; align-items:center;">
+        <label>Docs</label>
+        <span style="flex:1"></span>
+        <div class="row" style="gap:4px;">
+          <button class="btn" type="button" onclick="multiSelectAll('planner_docs')">All</button>
+          <button class="btn" type="button" onclick="multiSelectNone('planner_docs')">None</button>
+        </div>
+      </div>
+      <div class="row" style="margin-bottom:8px;">
+        <select id="planner_docs" multiple size="10" style="width:100%"></select>
       </div>
       <div class="row" style="margin-bottom:8px;">
         <label>Payload JSON</label>
@@ -228,18 +255,107 @@
     window.__COV_DOC_OPEN__ = window.__COV_DOC_OPEN__ || {}; // plugin -> Set(doc_id)
     window.__COV_DATA__ = window.__COV_DATA__ || {}; // plugin -> {present, missing}
     window.__ATTR_ITEM_CACHE__ = window.__ATTR_ITEM_CACHE__ || {}; // key: plugin|doc -> json
+    window.__PLANNER_SELECTED_PLUGINS__ = window.__PLANNER_SELECTED_PLUGINS__ || [];
+    window.__PLANNER_SELECTED_DOCS__ = window.__PLANNER_SELECTED_DOCS__ || [];
+    window.__RUNNABLE_PLUGINS__ = window.__RUNNABLE_PLUGINS__ || [];
+    window.__DOCS_COVERAGE_TOTAL__ = window.__DOCS_COVERAGE_TOTAL__ || 0;
 
     async function refresh(){
       const r = await fetch('/api/status');
       const data = await r.json();
       render(data);
+      populatePlannerDocs();
+      ensurePlannerBindings();
+      restorePlannerSelections();
     }
     function selValues(id){
       const s = document.getElementById(id);
       return Array.from(s.selectedOptions).map(o=>o.value);
     }
+    function rememberSelection(id, key){
+      const sel = document.getElementById(id);
+      if(!sel){ return; }
+      window[key] = Array.from(sel.selectedOptions).map(o=>o.value);
+    }
+    function applySelection(id, key){
+      const sel = document.getElementById(id);
+      if(!sel){ return; }
+      const desired = new Set(window[key] || []);
+      Array.from(sel.options).forEach(opt=>{ opt.selected = desired.has(opt.value); });
+    }
+    function restorePlannerSelections(){
+      applySelection('plugins', '__PLANNER_SELECTED_PLUGINS__');
+      applySelection('planner_docs', '__PLANNER_SELECTED_DOCS__');
+    }
+    function populatePlannerDocs(){
+      const select = document.getElementById('planner_docs');
+      if(!select){ return; }
+      const docs = window.__DOCS__ || [];
+      const scroll = select.scrollTop;
+      select.innerHTML = '';
+      docs.slice().sort((a,b)=>a.doc_id.localeCompare(b.doc_id)).forEach(doc=>{
+        const opt = document.createElement('option');
+        opt.value = doc.doc_id;
+        const domain = doc.domain ? ` (${doc.domain})` : '';
+        opt.textContent = `${doc.doc_id}${domain}`;
+        select.appendChild(opt);
+      });
+      applySelection('planner_docs', '__PLANNER_SELECTED_DOCS__');
+      select.scrollTop = scroll;
+      rememberSelection('planner_docs', '__PLANNER_SELECTED_DOCS__');
+    }
+    function multiSelectAll(id){
+      const sel = document.getElementById(id);
+      if(!sel){ return; }
+      Array.from(sel.options).forEach(opt=>{ opt.selected = true; });
+      rememberSelection(id, id === 'plugins' ? '__PLANNER_SELECTED_PLUGINS__' : '__PLANNER_SELECTED_DOCS__');
+      restorePlannerSelections();
+    }
+    function multiSelectNone(id){
+      const sel = document.getElementById(id);
+      if(!sel){ return; }
+      Array.from(sel.options).forEach(opt=>{ opt.selected = false; });
+      rememberSelection(id, id === 'plugins' ? '__PLANNER_SELECTED_PLUGINS__' : '__PLANNER_SELECTED_DOCS__');
+      restorePlannerSelections();
+    }
+    function ensurePlannerBindings(){
+      const pluginSel = document.getElementById('plugins');
+      if(pluginSel && pluginSel.dataset.plannerBound !== '1'){
+        const handler = ()=>rememberSelection('plugins', '__PLANNER_SELECTED_PLUGINS__');
+        pluginSel.addEventListener('change', handler);
+        pluginSel.addEventListener('input', handler);
+        pluginSel.addEventListener('mousedown', evt=>toggleOptionSelection(evt, handler));
+        pluginSel.dataset.plannerBound = '1';
+        handler();
+      }
+      const docSel = document.getElementById('planner_docs');
+      if(docSel && docSel.dataset.plannerBound !== '1'){
+        const handler = ()=>rememberSelection('planner_docs', '__PLANNER_SELECTED_DOCS__');
+        docSel.addEventListener('change', handler);
+        docSel.addEventListener('input', handler);
+        docSel.addEventListener('mousedown', evt=>toggleOptionSelection(evt, handler));
+        docSel.dataset.plannerBound = '1';
+        handler();
+      }
+    }
+    function toggleOptionSelection(evt, handler){
+      const opt = evt.target;
+      if(!opt || opt.tagName !== 'OPTION'){ return; }
+      evt.preventDefault();
+      const sel = opt.parentElement;
+      const willSelect = !opt.selected;
+      opt.selected = willSelect;
+      if(!opt.selected){
+        // keep focus on select to allow repeated toggles
+        sel.focus();
+      }
+      handler();
+    }
     async function planEnqueue(){
+      rememberSelection('plugins', '__PLANNER_SELECTED_PLUGINS__');
+      rememberSelection('planner_docs', '__PLANNER_SELECTED_DOCS__');
       const plugins = selValues('plugins');
+      const doc_ids = selValues('planner_docs');
       const payload = {
         plugins,
         only_missing: document.getElementById('only_missing').checked,
@@ -249,18 +365,19 @@
       };
       const pjson = document.getElementById('payload_json').value||'';
       if(pjson){ payload.payload_json = pjson; }
+      if(doc_ids.length){ payload.doc_ids = doc_ids; }
       await fetch('/api/plan', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
       await refresh();
     }
     async function enqueueSelected(){
+      rememberSelection('plugins', '__PLANNER_SELECTED_PLUGINS__');
+      rememberSelection('planner_docs', '__PLANNER_SELECTED_DOCS__');
       const plugins = selValues('plugins');
-      let doc_ids = (document.getElementById('doc_ids').value||'').split(',').map(s=>s.trim()).filter(Boolean);
+      let doc_ids = selValues('planner_docs');
+      const manual = (document.getElementById('doc_ids').value||'').split(',').map(s=>s.trim()).filter(Boolean);
+      doc_ids = Array.from(new Set([...doc_ids, ...manual]));
       if(doc_ids.length === 0){
-        // request doc_ids via status coverage keys
-        const r = await fetch('/api/status');
-        const data = await r.json();
-        // fallback: we cannot list doc ids from status; backend API expects explicit ids
-        alert('Provide doc_ids (comma-separated) to enqueue directly.');
+        alert('Select docs from the Docs list or provide doc_ids (comma-separated).');
         return;
       }
       await fetch('/api/enqueue', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({plugins, doc_ids})});
@@ -556,19 +673,28 @@
       const r = await fetch('/api/docs');
       const data = await r.json();
       window.__DOCS__ = data.docs||[];
+      window.__DOCS_COVERAGE_TOTAL__ = data.coverage_total || 0;
+      window.__RUNNABLE_PLUGINS__ = data.runnable_plugins || window.__RUNNABLE_PLUGINS__;
       renderDocs();
+      populatePlannerDocs();
+      restorePlannerSelections();
     }
     function renderDocs(){
       const docs = (window.__DOCS__||[]).slice();
       const q = (document.getElementById('doc_filter').value||'').toLowerCase();
       const root = document.getElementById('docs');
-      const rows = ['<table><thead><tr><th></th><th>Doc ID</th><th>Domain</th><th>Path</th></tr></thead><tbody>'];
+      const total = window.__DOCS_COVERAGE_TOTAL__ || (window.__RUNNABLE_PLUGINS__||[]).length;
+      const rows = ['<table><thead><tr><th></th><th>Doc ID</th><th style="width:120px;">Coverage</th><th>Domain</th><th>Path</th></tr></thead><tbody>'];
       docs.filter(d=>!q || d.doc_id.toLowerCase().includes(q) || (d.domain||'').toLowerCase().includes(q))
           .forEach(d=>{
         const open = window.__DOC_OPEN__.has(d.doc_id);
+        const have = d.coverage ? (d.coverage.have||0) : 0;
+        const tot = d.coverage ? (d.coverage.total||total) : total;
+        const pct = tot ? Math.round((have/tot)*100) : 0;
         rows.push(`<tr onclick="toggleDoc('${d.doc_id}')" style="cursor:pointer;">`
           + `<td style="width:18px;"><span id="doc_arrow_${d.doc_id}">${open?'▾':'›'}</span></td>`
           + `<td><b>${d.doc_id}</b></td>`
+          + `<td><small>${pct}% (${have}/${tot})</small></td>`
           + `<td><small>${d.domain||''}</small></td>`
           + `<td><span class=mono>${d.path||''}</span></td>`
           + `</tr>`);
@@ -576,14 +702,23 @@
           const meta = window.__DOC_META__[d.doc_id];
           const attrs = meta && meta.attributes ? meta.attributes : {};
           const plugs = Object.keys(attrs).sort();
+          rows.push(`<tr><td></td><td colspan=4><div class="row" style="gap:6px;">
+            <button class="btn small" onclick="event.stopPropagation(); enqueueDocAll('${d.doc_id}', false);">All</button>
+            <button class="btn small" onclick="event.stopPropagation(); enqueueDocAll('${d.doc_id}', true);">All (Force)</button>
+          </div></td></tr>`);
           for(const plug of plugs){
             const attrOpen = (window.__DOC_ATTR_OPEN__[d.doc_id]||new Set()).has(plug);
+            const metaInfo = attrs[plug] || {};
+            const runnable = metaInfo.runnable !== false;
             rows.push(`<tr onclick="toggleDocAttr(event,'${d.doc_id}','${plug}')" style="cursor:pointer;">`
               + `<td></td>`
               + `<td colspan=2><span id="doc_attr_arrow_${d.doc_id}_${plug}">${attrOpen?'▾':'›'}</span> ${plug}</td>`
-              + `<td></td>`
+              + `<td colspan=2><div class="row" style="justify-content:flex-end; gap:4px;">
+                    <button class="btn small" ${runnable?'':'disabled'} onclick="event.stopPropagation(); enqueueDocAttr('${d.doc_id}','${plug}', false);">Run</button>
+                    <button class="btn small" ${runnable?'':'disabled'} onclick="event.stopPropagation(); enqueueDocAttr('${d.doc_id}','${plug}', true);">Run (Force)</button>
+                  </div></td>`
               + `</tr>`);
-            rows.push(`<tr id="doc_attr_full_${d.doc_id}_${plug}" style="display:${attrOpen?'':'none'};"><td></td><td colspan=3><pre style="white-space:pre-wrap;background:var(--panel-alt);padding:8px;border-radius:6px;border:1px solid var(--border);" id="doc_attr_pre_${d.doc_id}_${plug}"></pre></td></tr>`);
+            rows.push(`<tr id="doc_attr_full_${d.doc_id}_${plug}" style="display:${attrOpen?'':'none'};"><td></td><td colspan=4><pre style="white-space:pre-wrap;background:var(--panel-alt);padding:8px;border-radius:6px;border:1px solid var(--border);" id="doc_attr_pre_${d.doc_id}_${plug}"></pre></td></tr>`);
           }
           // Chunk-level attributes (currently exposing chunk-summary)
           const cplug = 'chunk-summary';
@@ -591,9 +726,9 @@
           rows.push(`<tr onclick="toggleDocChunkAttr(event,'${d.doc_id}','${cplug}')" style="cursor:pointer;">`
             + `<td></td>`
             + `<td colspan=2><span id="doc_chunk_attr_arrow_${d.doc_id}_${cplug}">${cOpen?'▾':'›'}</span> ${cplug} <span style="opacity:.65;">(per-chunk)</span></td>`
-            + `<td></td>`
+            + `<td colspan=2></td>`
             + `</tr>`);
-          rows.push(`<tr id="doc_chunk_attr_full_${d.doc_id}_${cplug}" style="display:${cOpen?'':'none'};"><td></td><td colspan=3><div style="background:var(--panel-alt);padding:8px;border-radius:6px;max-height:260px;overflow:auto;border:1px solid var(--border);" id="doc_chunk_attr_div_${d.doc_id}_${cplug}"></div></td></tr>`);
+          rows.push(`<tr id="doc_chunk_attr_full_${d.doc_id}_${cplug}" style="display:${cOpen?'':'none'};"><td></td><td colspan=4><div style="background:var(--panel-alt);padding:8px;border-radius:6px;max-height:260px;overflow:auto;border:1px solid var(--border);" id="doc_chunk_attr_div_${d.doc_id}_${cplug}"></div></td></tr>`);
         }
       });
       rows.push('</tbody></table>');
@@ -679,6 +814,38 @@
       }
       if(row){ row.style.display = ''; }
       if(arrow){ arrow.textContent = '▾'; }
+    }
+    async function enqueueDocAttr(doc_id, plugin, force){
+      const meta = window.__DOC_META__[doc_id];
+      const attrs = meta && meta.attributes ? meta.attributes : {};
+      const info = attrs[plugin];
+      if(!info || info.runnable === false){
+        alert(`Plugin ${plugin} is not runnable from dashboard.`);
+        return;
+      }
+      const payload = force ? { overwrite: true, force: true } : { force: true };
+      await fetch('/api/enqueue', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({doc_ids:[doc_id], plugins:[plugin], payload})
+      });
+      await refresh();
+    }
+    async function enqueueDocAll(doc_id, force){
+      const meta = window.__DOC_META__[doc_id];
+      const attrs = meta && meta.attributes ? meta.attributes : {};
+      const runnable = Object.keys(attrs).filter(p=>attrs[p] && attrs[p].runnable !== false);
+      if(!runnable.length){
+        alert('No runnable attributes for this document.');
+        return;
+      }
+      const payload = force ? { overwrite: true, force: true } : { force: true };
+      await fetch('/api/enqueue', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({doc_ids:[doc_id], plugins: runnable, payload})
+      });
+      await refresh();
     }
     async function loadFailedJobs(){
       const r = await fetch('/api/queue/list?status=failed&limit=50');

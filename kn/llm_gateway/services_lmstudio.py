@@ -20,9 +20,15 @@ class LmStudioAgent(ServiceAgent):
         self.base_url = config.get("base_url", "http://127.0.0.1:12345/v1").rstrip("/")
         self.api_key = config.get("api_key", "lm-studio")
         self.timeout = int(config.get("timeout", 120))
+        self.manage_models = bool(config.get("manage_models"))
 
     # ------------------------------------------------------------------
     def ensure_model_loaded(self, model: str):
+        if not self.manage_models:
+            if self.current_model() != model:
+                self.logger.debug("Skipping explicit load for %s (manage_models disabled)", model)
+                self.update_model_tracking(model)
+            return
         force_reload = bool(self.config.get("force_model_reload"))
         if self.current_model() == model and not force_reload:
             return
@@ -55,6 +61,10 @@ class LmStudioAgent(ServiceAgent):
         return data
 
     def unload_current_model(self):
+        if not self.manage_models:
+            self.logger.debug("Skipping explicit unload (manage_models disabled)")
+            self.update_model_tracking(model="")
+            return
         model = self.current_model()
         if not model:
             return

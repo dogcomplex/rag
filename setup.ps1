@@ -3,9 +3,23 @@ param(
   [string]$Model = "llama-3.1-8b-instruct"
 )
 
-python -m venv .venv
+if (-not (Test-Path ".venv\Scripts\python.exe")) {
+  python -m venv .venv
+} else {
+  Write-Host "Virtual environment already exists; skipping creation."
+}
+
+if (-not (Test-Path ".venv\Scripts\Activate.ps1")) {
+  throw "Virtual environment missing activation script; rerun without workers or recreate manually."
+}
+
 . .\.venv\Scripts\Activate.ps1
-pip install -r requirements-win.txt
+
+if (Test-Path "requirements-win.txt") {
+  python -m pip install -r requirements-win.txt
+} else {
+  python -m pip install -r requirements.txt
+}
 $env:PYTHONPATH = $PSScriptRoot
 
 try {
