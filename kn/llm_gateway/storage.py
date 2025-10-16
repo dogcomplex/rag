@@ -60,6 +60,8 @@ class QueueStorage:
             con.commit()
 
     def enqueue(self, req: GatewayRequest):
+        payload_json = _safe_json(req.payload)
+        metadata_json = _safe_json(req.metadata or {})
         with self._connect() as con:
             con.execute(
                 "INSERT OR REPLACE INTO requests(request_id, service, model, payload, metadata, created_ts, status)"
@@ -68,8 +70,8 @@ class QueueStorage:
                     req.request_id,
                     req.service,
                     req.model,
-                    json.dumps(req.payload, ensure_ascii=False),
-                    json.dumps(req.metadata or {}, ensure_ascii=False),
+                    payload_json,
+                    metadata_json,
                     req.created_ts,
                 ),
             )
@@ -100,6 +102,9 @@ class QueueStorage:
         )
 
     def store_response(self, response: GatewayResponse):
+        content = _safe_text(response.content)
+        raw_json = _safe_json(response.raw) if response.raw is not None else None
+        error_text = _safe_text(response.error)
         with self._connect() as con:
             con.execute(
                 "INSERT OR REPLACE INTO responses(request_id, success, content, raw, error, latency_ms, created_ts)"
@@ -107,9 +112,9 @@ class QueueStorage:
                 (
                     response.request_id,
                     1 if response.success else 0,
-                    response.content,
-                    json.dumps(response.raw, ensure_ascii=False) if response.raw else None,
-                    response.error,
+                    content,
+                    raw_json,
+                    error_text,
                     response.latency_ms,
                     time.time(),
                 ),
@@ -164,6 +169,22 @@ class QueueStorage:
             pending = con.execute(f"SELECT COUNT(*) FROM requests WHERE status='pending'" + (" AND service=?" if service else ""), params).fetchone()[0]
             running = con.execute(f"SELECT COUNT(*) FROM requests WHERE status='running'" + (" AND service=?" if service else ""), params).fetchone()[0]
         return {"pending": pending, "running": running}
+
+
+def _safe_json(value: Any) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=False)
+    except Exception:
+        text = json.dumps(str(value), ensure_ascii=False)
+    return _safe_text(text)
+
+
+def _safe_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        value = str(value)
+    return value.encode('utf-8', errors='replace').decode('utf-8')
 
 
 

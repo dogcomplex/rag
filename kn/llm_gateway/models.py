@@ -23,8 +23,8 @@ class GatewayRequest:
             "request_id": self.request_id,
             "service": self.service,
             "model": self.model,
-            "payload": self.payload,
-            "metadata": self.metadata,
+            "payload": json.loads(json.dumps(self.payload, ensure_ascii=False, default=str)),
+            "metadata": json.loads(json.dumps(self.metadata, ensure_ascii=False, default=str)),
             "created_ts": self.created_ts,
         }
 

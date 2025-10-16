@@ -1,6 +1,19 @@
-import argparse, time, json
+import argparse, time, json, threading
 from kn.config import load_configs
-from kn.jobs_sqlite import ensure_db, dequeue_batch, ack_job, iter_docs_for_jobs, fail_and_requeue_job, list_pending_plugins, try_acquire, release, set_limit
+from kn.jobs_sqlite import (
+    ensure_db,
+    dequeue_batch,
+    ack_job,
+    iter_docs_for_jobs,
+    fail_and_requeue_job,
+    list_pending_plugins,
+    try_acquire,
+    release,
+    set_limit,
+    reset_status,
+    reset_running_jobs,
+    reset_counter,
+)
 
 def run_once(plugins, cfg, batch_size=16):
     ensure_db(cfg)
@@ -30,9 +43,9 @@ def run_once(plugins, cfg, batch_size=16):
     for j in jobs:
         by_plugin.setdefault(j["plugin"], []).append(j)
     for plugin, items in by_plugin.items():
-        # global concurrency cap
-        if not try_acquire(cfg, 'llm_concurrency'):
-            # can't acquire slot, skip this plugin batch this round
+        acquired = try_acquire(cfg, 'llm_concurrency')
+        if not acquired:
+            print(f"[enrich] {plugin}: concurrency limit reached, skipping batch")
             continue
         fs_name = plugin.replace('-', '_')
         pypath = pathlib.Path(f"plugins/attributes/{fs_name}.py")
@@ -71,25 +84,63 @@ def run_once(plugins, cfg, batch_size=16):
             if summary_docs:
                 print(f"[worker-current] plugin={plugin} docs={summary_docs}")
             proc = subprocess.Popen([sys.executable, str(pypath)], stdin=subprocess.PIPE,
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            out, _ = proc.communicate("\n".join(inp_lines), timeout=proc_timeout)
-            if out:
-                for line in out.splitlines():
-                    print(f"[plugin:{plugin}] {line}")
-            print(f"[enrich] {plugin}: {len(items)} docs processed")
-            for j in items:
-                ack_job(cfg, j["id"])
-        except subprocess.TimeoutExpired as e:
-            print(f"[enrich] {plugin}: timeout, requeueing batch")
-            for j in items:
-                fail_and_requeue_job(cfg, j["id"], error_message="timeout", back_to_pending=True)
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+
+            def _pump_stdout():
+                try:
+                    for raw_line in proc.stdout:
+                        print(f"[plugin:{plugin}] {raw_line.rstrip()}" )
+                except Exception:
+                    pass
+
+            reader = threading.Thread(target=_pump_stdout, daemon=True)
+            reader.start()
+
+            input_blob = "\n".join(inp_lines) + "\n"
+            try:
+                proc.stdin.write(input_blob)
+                proc.stdin.close()
+            except Exception:
+                pass
+
+            try:
+                proc.wait(timeout=proc_timeout)
+            except subprocess.TimeoutExpired:
+                print(f"[enrich] {plugin}: timeout, requeueing batch")
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    proc.communicate(timeout=1)
+                except Exception:
+                    pass
+                for j in items:
+                    fail_and_requeue_job(cfg, j["id"], error_message="timeout", back_to_pending=True)
+                continue
+            finally:
+                reader.join(timeout=0.5)
+
+            if proc.returncode and proc.returncode != 0:
+                msg = f"exit code {proc.returncode}"
+                print(f"[enrich] {plugin}: {msg}, requeueing batch")
+                for j in items:
+                    fail_and_requeue_job(cfg, j["id"], error_message=msg, back_to_pending=True)
+            else:
+                print(f"[enrich] {plugin}: {len(items)} docs processed")
+                for j in items:
+                    ack_job(cfg, j["id"])
         except Exception as e:
             msg = str(e)[:500]
             print(f"[enrich] {plugin}: error {msg}")
+            back_to_pending = True
+            if 'Context too large' in msg or 'context too large' in msg:
+                back_to_pending = False
             for j in items:
-                fail_and_requeue_job(cfg, j["id"], error_message=msg, back_to_pending=True)
+                fail_and_requeue_job(cfg, j["id"], error_message=msg, back_to_pending=back_to_pending)
         finally:
-            release(cfg, 'llm_concurrency')
+            if acquired:
+                release(cfg, 'llm_concurrency')
             print(f"[worker-current-clear] plugin={plugin}")
     return len(jobs)
 
@@ -106,6 +157,8 @@ if __name__ == "__main__":
     any_pending = args.any_pending or (len(plugins)==1 and plugins[0] in ("*","any"))
     # set concurrency limit at start
     set_limit(cfg, 'llm_concurrency', max(1, int(args.max_inflight)))
+    reset_running_jobs(cfg, status='pending')
+    reset_counter(cfg, 'llm_concurrency')
     while True:
         use_plugins = plugins
         if any_pending:

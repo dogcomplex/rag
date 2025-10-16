@@ -145,7 +145,7 @@
         <button class="btn" onclick="loadQueueList()">Load</button>
         <span style="flex:1"></span>
         <label>Clear</label>
-        <select id="queue_clear_mode"><option value="non-done">non-done</option><option value="pending">pending</option><option value="reset-running">reset running→pending</option><option value="all">all</option></select>
+        <select id="queue_clear_mode"><option value="non-done">non-done</option><option value="pending">pending</option><option value="reset-running">reset running→pending</option><option value="reset-running-counter">reset running→pending + reset counter</option><option value="all">all</option></select>
         <button class="btn" onclick="clearQueue()">Clear Queue</button>
       </div>
         <div id="queue_list" style="max-height:240px; overflow:auto; border:1px solid #eee; border-radius:6px; padding:6px;"></div>
@@ -164,6 +164,11 @@
           <button class="btn" onclick="loadCacheList()">List</button>
         </div>
         <div id="cache_list" style="max-height:240px; overflow:auto; border:1px solid #eee; border-radius:6px; padding:6px;"></div>
+      </details>
+      <details style="margin:8px 0;">
+        <summary><b>Failed Jobs</b></summary>
+        <button class="btn" onclick="loadFailedJobs()">Refresh Failed</button>
+        <div id="failed_jobs" style="margin-top:8px; max-height:200px; overflow:auto; border:1px solid #ddd; border-radius:6px; padding:6px;"></div>
       </details>
       <div class="row" style="justify-content:space-between;align-items:center;">
         <h3>Attributes Coverage</h3>
@@ -320,7 +325,8 @@
 
       const w = data.worker||{};
       const log = (w.log_tail||[]).join('\n');
-      document.getElementById('worker_log').textContent = (w.running? '[running]\n' : '[stopped]\n') + log;
+      const statusPrefix = w.running ? '[running]\n' : '[stopped]\n';
+      document.getElementById('worker_log').textContent = statusPrefix + log;
       renderWorkers(data.workers||[]);
 
       window.__STATUS__ = data;
@@ -418,7 +424,7 @@
       const eta2 = (data.queue||{}).eta||{};
       const overallEtaTxt = (eta2 && eta2.overall_sec!=null) ? `Overall ETA: ${fmtDur(eta2.overall_sec)}` : '';
       document.getElementById('coverage_overall').innerHTML = overallEtaTxt? `<small>${overallEtaTxt}</small>` : '';
-      const rows = ['<table><thead><tr><th></th><th>Attribute</th><th>Have/Total</th><th>pct</th><th>Pending</th><th>Running</th><th>Avg s</th><th>DPS</th><th>ETA</th><th>Missing (examples)</th></tr></thead><tbody>'];
+      const rows = ['<table><thead><tr><th></th><th>Attribute</th><th>Have/Total</th><th>pct</th><th>Pending</th><th>Running</th><th>Failed</th><th>Avg s</th><th>DPS</th><th>ETA</th><th>Missing (examples)</th></tr></thead><tbody>'];
       const plugins = Object.keys(cov).sort();
       for(const k of plugins){
         const v = cov[k];
@@ -426,13 +432,15 @@
         const dps = (thr2.plugin_dps||{})[k];
         const etaS = (eta2.plugin_sec||{})[k];
         const isOpen = window.__COV_OPEN__.has(k);
-        rows.push(`<tr onclick=\"toggleCov('${k}')\" style=\"cursor:pointer;\">`
-          + `<td style=\"width:18px;\"><span id=\"cov_arrow_${k}\">${isOpen?'▾':'›'}</span></td>`
+        rows.push(`<tr onclick="toggleCov('${k}')" style="cursor:pointer;">`
+          + `<td style="width:18px;"><span id="cov_arrow_${k}">${isOpen?'▾':'›'}</span></td>`
           + `<td>${k}</td>`
           + `<td>${v.have}/${v.total_docs}</td>`
           + `<td>${v.pct}%</td>`
           + `<td>${st.pending||0}</td>`
           + `<td>${st.running||0}</td>`
+          + `<td>${st.failed||0}</td>`
+          + `<td>${st.failed||0}</td>`
           + `<td>${d? d.avg_s: ''}</td>`
           + `<td>${dps!=null? dps: ''}</td>`
           + `<td>${etaS!=null? fmtDur(etaS): ''}</td>`
@@ -445,15 +453,14 @@
           for(const item of present){
             const doc_id = item.doc_id; const prev = item.preview||'';
             const docOpen = (window.__COV_DOC_OPEN__[k]||new Set()).has(doc_id);
-            rows.push(`<tr onclick=\"toggleCovDoc(event,'${k}','${doc_id}')\" style=\"cursor:pointer;\">`
+            rows.push(`<tr onclick="toggleCovDoc(event,'${k}','${doc_id}')" style="cursor:pointer;">`
               + `<td></td>`
-              + `<td colspan=2><span id=\"cov_doc_arrow_${k}_${doc_id}\">${docOpen?'▾':'›'}</span> <b>${doc_id}</b></td>`
-              + `<td colspan=7 style=\"color:#555;\">${escapeHtml(prev)}</td>`
+              + `<td colspan=2><span id="cov_doc_arrow_${k}_${doc_id}">${docOpen?'▾':'›'}</span> <b>${doc_id}</b></td>`
+              + `<td colspan=8 style="color:#555;">${escapeHtml(prev)}</td>`
               + `</tr>`);
-            // full content row
             const key = `${k}|${doc_id}`;
             const hasFull = window.__ATTR_ITEM_CACHE__[key] != null;
-            rows.push(`<tr id=\"cov_full_${k}_${doc_id}\" style=\"display:${docOpen?'':'none'};\"><td></td><td colspan=9><pre style=\"white-space:pre-wrap;background:#f6f6f6;padding:8px;border-radius:6px;\" id=\"cov_pre_${k}_${doc_id}\">${hasFull? escapeHtml(JSON.stringify(window.__ATTR_ITEM_CACHE__[key], null, 2)) : ''}</pre></td></tr>`);
+            rows.push(`<tr id="cov_full_${k}_${doc_id}" style="display:${docOpen?'':'none'};"><td></td><td colspan=10><pre style="white-space:pre-wrap;background:#f6f6f6;padding:8px;border-radius:6px;" id="cov_pre_${k}_${doc_id}">${hasFull? escapeHtml(JSON.stringify(window.__ATTR_ITEM_CACHE__[key], null, 2)) : ''}</pre></td></tr>`);
           }
         }
       }
@@ -527,8 +534,8 @@
       docs.filter(d=>!q || d.doc_id.toLowerCase().includes(q) || (d.domain||'').toLowerCase().includes(q))
           .forEach(d=>{
         const open = window.__DOC_OPEN__.has(d.doc_id);
-        rows.push(`<tr onclick=\"toggleDoc('${d.doc_id}')\" style=\"cursor:pointer;\">`
-          + `<td style=\"width:18px;\"><span id=\"doc_arrow_${d.doc_id}\">${open?'▾':'›'}</span></td>`
+        rows.push(`<tr onclick="toggleDoc('${d.doc_id}')" style="cursor:pointer;">`
+          + `<td style="width:18px;"><span id="doc_arrow_${d.doc_id}">${open?'▾':'›'}</span></td>`
           + `<td><b>${d.doc_id}</b></td>`
           + `<td><small>${d.domain||''}</small></td>`
           + `<td><span class=mono>${d.path||''}</span></td>`
@@ -539,22 +546,22 @@
           const plugs = Object.keys(attrs).sort();
           for(const plug of plugs){
             const attrOpen = (window.__DOC_ATTR_OPEN__[d.doc_id]||new Set()).has(plug);
-            rows.push(`<tr onclick=\"toggleDocAttr(event,'${d.doc_id}','${plug}')\" style=\"cursor:pointer;\">`
+            rows.push(`<tr onclick="toggleDocAttr(event,'${d.doc_id}','${plug}')" style="cursor:pointer;">`
               + `<td></td>`
-              + `<td colspan=2><span id=\"doc_attr_arrow_${d.doc_id}_${plug}\">${attrOpen?'▾':'›'}</span> ${plug}</td>`
+              + `<td colspan=2><span id="doc_attr_arrow_${d.doc_id}_${plug}">${attrOpen?'▾':'›'}</span> ${plug}</td>`
               + `<td></td>`
               + `</tr>`);
-            rows.push(`<tr id=\"doc_attr_full_${d.doc_id}_${plug}\" style=\"display:${attrOpen?'':'none'};\"><td></td><td colspan=3><pre style=\"white-space:pre-wrap;background:#f6f6f6;padding:8px;border-radius:6px;\" id=\"doc_attr_pre_${d.doc_id}_${plug}\"></pre></td></tr>`);
+            rows.push(`<tr id="doc_attr_full_${d.doc_id}_${plug}" style="display:${attrOpen?'':'none'};"><td></td><td colspan=3><pre style="white-space:pre-wrap;background:#f6f6f6;padding:8px;border-radius:6px;" id="doc_attr_pre_${d.doc_id}_${plug}"></pre></td></tr>`);
           }
           // Chunk-level attributes (currently exposing chunk-summary)
           const cplug = 'chunk-summary';
           const cOpen = (window.__DOC_CHUNK_ATTR_OPEN__[d.doc_id]||new Set()).has(cplug);
-          rows.push(`<tr onclick=\"toggleDocChunkAttr(event,'${d.doc_id}','${cplug}')\" style=\"cursor:pointer;\">`
+          rows.push(`<tr onclick="toggleDocChunkAttr(event,'${d.doc_id}','${cplug}')" style="cursor:pointer;">`
             + `<td></td>`
-            + `<td colspan=2><span id=\"doc_chunk_attr_arrow_${d.doc_id}_${cplug}\">${cOpen?'▾':'›'}</span> ${cplug} <span style=\"opacity:.65;\">(per-chunk)</span></td>`
+            + `<td colspan=2><span id="doc_chunk_attr_arrow_${d.doc_id}_${cplug}">${cOpen?'▾':'›'}</span> ${cplug} <span style="opacity:.65;">(per-chunk)</span></td>`
             + `<td></td>`
             + `</tr>`);
-          rows.push(`<tr id=\"doc_chunk_attr_full_${d.doc_id}_${cplug}\" style=\"display:${cOpen?'':'none'};\"><td></td><td colspan=3><div style=\"background:#f6f6f6;padding:8px;border-radius:6px;max-height:260px;overflow:auto;\" id=\"doc_chunk_attr_div_${d.doc_id}_${cplug}\"></div></td></tr>`);
+          rows.push(`<tr id="doc_chunk_attr_full_${d.doc_id}_${cplug}" style="display:${cOpen?'':'none'};"><td></td><td colspan=3><div style="background:#f6f6f6;padding:8px;border-radius:6px;max-height:260px;overflow:auto;" id="doc_chunk_attr_div_${d.doc_id}_${cplug}"></div></td></tr>`);
         }
       });
       rows.push('</tbody></table>');
@@ -640,6 +647,28 @@
       }
       if(row){ row.style.display = ''; }
       if(arrow){ arrow.textContent = '▾'; }
+    }
+    async function loadFailedJobs(){
+      const r = await fetch('/api/queue/list?status=failed&limit=50');
+      const data = await r.json();
+      const items = data.items || [];
+      const root = document.getElementById('failed_jobs');
+      if(!items.length){ root.innerHTML = '<small>No failed jobs</small>'; return; }
+      root.innerHTML = '<ul>' + items.map(i=>`<li><a href="#" onclick="viewJob(${i.id});return false;">${i.plugin} :: ${i.doc_id} (#${i.id})</a>${i.last_error?` <small class=err>${escapeHtml((i.last_error||'').slice(0,120))}</small>`:''}</li>`).join('') + '</ul>';
+    }
+    async function viewJob(id){
+      const r = await fetch('/api/queue/job/' + id);
+      if(!r.ok){ alert('Job '+id+' not found'); return; }
+      const job = await r.json();
+      const pre = document.createElement('pre');
+      pre.style.whiteSpace = 'pre-wrap';
+      pre.style.background = '#f6f6f6';
+      pre.style.padding = '8px';
+      pre.style.borderRadius = '6px';
+      pre.textContent = JSON.stringify(job, null, 2);
+      const root = document.getElementById('failed_jobs');
+      root.innerHTML = '';
+      root.appendChild(pre);
     }
     
   </script>

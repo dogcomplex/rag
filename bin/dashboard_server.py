@@ -140,11 +140,29 @@ def _attribute_coverage(plugins, doc_ids):
         p = ATTR_DIR / plugin
         have = 0
         missing = []
+        failed = 0
+        failed_examples = []
         if p.exists():
             existing = {f.stem for f in p.glob('*.json')}
             for d in doc_ids:
                 if d in existing:
-                    have += 1
+                    fpath = p / f"{d}.json"
+                    try:
+                        data = json.loads(fpath.read_text(encoding='utf-8'))
+                    except Exception:
+                        failed += 1
+                        if len(failed_examples) < 5:
+                            failed_examples.append({'doc_id': d, 'error': 'invalid json'})
+                        continue
+                    value = data.get('value')
+                    error = data.get('error')
+                    unavailable = isinstance(value, str) and 'unavailable' in value.lower()
+                    if error or unavailable:
+                        failed += 1
+                        if len(failed_examples) < 5:
+                            failed_examples.append({'doc_id': d, 'error': error or value})
+                    else:
+                        have += 1
                 else:
                     missing.append(d)
         else:
@@ -153,8 +171,10 @@ def _attribute_coverage(plugins, doc_ids):
         coverage[plugin] = {
             'total_docs': total,
             'have': have,
+            'failed': failed,
             'pct': round(100.0 * (have / total), 1) if total else 0.0,
             'missing_examples': missing[:5],
+            'failed_examples': failed_examples[:5],
         }
     return coverage
 
@@ -183,6 +203,7 @@ def _db_summary(minutes_recent=60):
             'by_plugin_status': {},
             'oldest_pending_min': None,
             'recent_created': {},
+            'recent_failed': {},
         }
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
@@ -221,6 +242,19 @@ def _db_summary(minutes_recent=60):
         except Exception:
             recent = {}
         out['recent_created'] = recent
+
+        # recent failed per plugin
+        recent_failed = {}
+        try:
+            cutoff = dt.datetime.now() - dt.timedelta(minutes=minutes_recent)
+            cutoff_iso = cutoff.isoformat(sep=' ')
+            for row in cur.execute(
+                "select plugin, count(*) as n from jobs where status='failed' and completed_at >= ? group by plugin",
+                (cutoff_iso,)):
+                recent_failed[row['plugin']] = row['n']
+        except Exception:
+            recent_failed = {}
+        out['recent_failed'] = recent_failed
     finally:
         con.close()
     return out
@@ -429,6 +463,38 @@ def api_queue_list():
     con.close()
     return jsonify({'items': rows})
 
+
+@app.get('/api/queue/job/<int:job_id>')
+def api_queue_job(job_id: int):
+    if not DB_PATH.exists():
+        return jsonify({'error': 'queue database not found'}), 404
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    cur = con.cursor()
+    row = cur.execute(
+        "select id, plugin, doc_id, status, payload, retries, last_error, created_at, completed_at from jobs where id=?",
+        (job_id,),
+    ).fetchone()
+    con.close()
+    if not row:
+        return jsonify({'error': 'job not found', 'id': job_id}), 404
+    payload = row['payload']
+    try:
+        payload = json.loads(payload) if payload else None
+    except Exception:
+        payload = {'raw': payload}
+    return jsonify({
+        'id': row['id'],
+        'plugin': row['plugin'],
+        'doc_id': row['doc_id'],
+        'status': row['status'],
+        'payload': payload,
+        'retries': row['retries'],
+        'last_error': row['last_error'],
+        'created_at': row['created_at'],
+        'completed_at': row['completed_at'],
+    })
+
 @app.post('/api/queue/clear')
 def api_queue_clear():
     mode = (request.get_json(force=True, silent=True) or {}).get('mode') or 'non-done'
@@ -442,9 +508,12 @@ def api_queue_clear():
         if mode == 'all':
             cur.execute('delete from jobs')
             cleared = cur.rowcount
-        elif mode == 'reset-running':
-            cur.execute("update jobs set status='pending' where status='running'")
+        elif mode in ('reset-running', 'reset-running-counter'):
+            cur.execute("update jobs set status='pending', retries=coalesce(retries,0)+1 where status='running'")
             cleared = cur.rowcount
+            if mode == 'reset-running-counter':
+                from kn.jobs_sqlite import reset_counter
+                reset_counter(load_configs(), 'llm_concurrency')
         elif mode == 'pending':
             cur.execute("delete from jobs where status='pending'")
             cleared = cur.rowcount
@@ -700,7 +769,7 @@ def api_status():
             'batch': w.get('batch'),
             'watch': w.get('watch'),
             'started_at': w.get('started_at'),
-            'log_tail': list(w.get('log', deque()))[-50:],
+            'log_tail': list(w.get('log', deque()))[-200:],
             'current': w.get('current'),
         })
     data['workers'] = workers
