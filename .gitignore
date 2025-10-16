@@ -5,6 +5,8 @@ ENV/
 env/
 *.venv
 
+on.tool
+
 # Python cache / compiled files
 __pycache__/
 *.py[cod]
