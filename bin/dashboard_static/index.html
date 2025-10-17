@@ -710,9 +710,10 @@
             const attrOpen = (window.__DOC_ATTR_OPEN__[d.doc_id]||new Set()).has(plug);
             const metaInfo = attrs[plug] || {};
             const runnable = metaInfo.runnable !== false;
+            const when = metaInfo.mtime ? new Date(metaInfo.mtime * 1000).toLocaleString() : '';
             rows.push(`<tr onclick="toggleDocAttr(event,'${d.doc_id}','${plug}')" style="cursor:pointer;">`
               + `<td></td>`
-              + `<td colspan=2><span id="doc_attr_arrow_${d.doc_id}_${plug}">${attrOpen?'▾':'›'}</span> ${plug}</td>`
+              + `<td colspan=2><span id="doc_attr_arrow_${d.doc_id}_${plug}">${attrOpen?'▾':'›'}</span> ${plug}${when?` <small style='opacity:.6;'>(${when})</small>`:''}</td>`
               + `<td colspan=2><div class="row" style="justify-content:flex-end; gap:4px;">
                     <button class="btn small" ${runnable?'':'disabled'} onclick="event.stopPropagation(); enqueueDocAttr('${d.doc_id}','${plug}', false);">Run</button>
                     <button class="btn small" ${runnable?'':'disabled'} onclick="event.stopPropagation(); enqueueDocAttr('${d.doc_id}','${plug}', true);">Run (Force)</button>
@@ -829,7 +830,8 @@
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({doc_ids:[doc_id], plugins:[plugin], payload})
       });
-      await refresh();
+      await refreshDocMeta(doc_id, plugin);
+      renderDocs();
     }
     async function enqueueDocAll(doc_id, force){
       const meta = window.__DOC_META__[doc_id];
@@ -845,7 +847,22 @@
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({doc_ids:[doc_id], plugins: runnable, payload})
       });
-      await refresh();
+      await refreshDocMeta(doc_id);
+      renderDocs();
+    }
+    async function refreshDocMeta(doc_id, plugin){
+      const r = await fetch(`/api/doc/${doc_id}`);
+      const data = await r.json();
+      window.__DOC_META__[doc_id] = data;
+      if(plugin){
+        const key = `${plugin}|${doc_id}`;
+        delete window.__ATTR_ITEM_CACHE__[key];
+        if(window.__DOC_ATTR_OPEN__[doc_id] && window.__DOC_ATTR_OPEN__[doc_id].has(plugin)){
+          const r2 = await fetch(`/api/doc/${doc_id}/attr/${plugin}`);
+          const js = await r2.json();
+          window.__ATTR_ITEM_CACHE__[key] = (js.item||js);
+        }
+      }
     }
     async function loadFailedJobs(){
       const r = await fetch('/api/queue/list?status=failed&limit=50');

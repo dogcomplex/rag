@@ -644,17 +644,26 @@ def _attr_paths_for_doc(doc_id: str):
                 for f in plugin_dir.glob(f"{doc_id}_*.json"):
                     try:
                         mode = f.stem.split('_', 1)[1]
-                        modes.append({'mode': mode, 'path': str(f)})
                     except Exception:
                         continue
+                    try:
+                        mt = f.stat().st_mtime
+                    except Exception:
+                        mt = None
+                    modes.append({'mode': mode, 'path': str(f), 'mtime': mt})
                 if modes:
                     out['summaries'] = {'modes': modes, 'runnable': False}
             else:
                 f = plugin_dir / f"{doc_id}.json"
                 if f.exists():
+                    try:
+                        mt = f.stat().st_mtime
+                    except Exception:
+                        mt = None
                     out[plugin_dir.name] = {
                         'path': str(f),
-                        'runnable': plugin_dir.name in DOC_ATTR_PLUGINS
+                        'mtime': mt,
+                        'runnable': plugin_dir.name in DOC_ATTR_PLUGINS,
                     }
     return out
 
