@@ -3,6 +3,11 @@ import sys
 import json
 import re
 from datetime import datetime
+try:
+    # Allow optional in-process sanitization if enabled via config
+    from sanitize_for_gemini import aggressive_sanitize_text_content as _gem_sanitize
+except Exception:
+    _gem_sanitize = None
 
 # Define encodings globally for use in multiple functions
 encodings = ['utf-8', 'latin-1', 'cp1252']
@@ -35,6 +40,7 @@ total_size_hard_cap_bytes = int(total_size_hard_cap_mb * 1024 * 1024)
 max_individual_file_size_mb = config.get("max_individual_file_size_mb", 1.0)
 max_individual_file_size_bytes = int(max_individual_file_size_mb * 1024 * 1024)
 skip_binary_files = config.get("skip_binary_files", True)
+sanitize_for_gemini = config.get("sanitize_for_gemini", False)
 
 excluded_files = config["excluded_files"]
 excluded_files_with_tree = config["excluded_files_with_tree"]
@@ -102,7 +108,6 @@ def _generate_summary_recursive_helper(current_path, indent, parent_excluded=Fal
             item_name_lower = item_name.lower()
             path_components_lower = [comp.lower() for comp in item_full_path.split(os.path.sep)]
             combined_excluded_folders_lower = [f.lower() for f in (excluded_folders + excluded_contents_folder)]
-            
             # Check if directory name or any part of its path is in the combined exclusion list
             if item_name_lower in combined_excluded_folders_lower or \
                any(excluded_path_part in path_components_lower for excluded_path_part in combined_excluded_folders_lower):
@@ -115,13 +120,17 @@ def _generate_summary_recursive_helper(current_path, indent, parent_excluded=Fal
         prefix = "X--" if is_excluded_for_concatenation else "+--"
         
         if is_dir:
-            sub_child_lines, sub_dir_bytes = _generate_summary_recursive_helper(
-                item_full_path, indent + 4, parent_excluded=is_excluded_for_concatenation
-            )
-            child_lines.append(f"{' ' * indent}{prefix} {item_name}/ ({sub_dir_bytes} bytes)")
-            if sub_child_lines:
-                child_lines.extend(sub_child_lines)
-            current_dir_total_bytes += sub_dir_bytes
+            # If excluded, do NOT recurse into the directory tree to avoid huge traversals
+            if item_is_cause_of_exclusion:
+                child_lines.append(f"{' ' * indent}{prefix} {item_name}/ (skipped)")
+            else:
+                sub_child_lines, sub_dir_bytes = _generate_summary_recursive_helper(
+                    item_full_path, indent + 4, parent_excluded=is_excluded_for_concatenation
+                )
+                child_lines.append(f"{' ' * indent}{prefix} {item_name}/ ({sub_dir_bytes} bytes)")
+                if sub_child_lines:
+                    child_lines.extend(sub_child_lines)
+                current_dir_total_bytes += sub_dir_bytes
         else:  # It's a file
             bytes_in_file = get_file_size_bytes(item_full_path)
             child_lines.append(f"{' ' * indent}{prefix} {item_name} ({bytes_in_file} bytes)")
@@ -272,6 +281,23 @@ def concatenate_files_and_split(root_dir, tree_content, base_prompt_text, output
                     outfile.write(f"{header_path_str}\n{filtered_content}\n\n")
                 else:
                     outfile.write(f"{header_path_str}\n```\nUnable to decode file content.\n```\n")
+
+        # Optional sanitize pass to produce a Gemini-friendly variant
+        if sanitize_for_gemini:
+            try:
+                if _gem_sanitize is not None:
+                    with open(output_path, 'r', encoding='utf-8', errors='ignore') as _rf:
+                        _raw = _rf.read()
+                    _clean = _gem_sanitize(_raw)
+                    _sanitized_path = os.path.splitext(output_path)[0] + "_sanitized.txt"
+                    with open(_sanitized_path, 'w', encoding='utf-8') as _wf:
+                        _wf.write(_clean)
+                    print(f"Sanitized file written to: {_sanitized_path}")
+                else:
+                    # Fallback: attempt to run the sanitizer script as a subprocess
+                    os.system(f"python SUMMARY/sanitize_for_gemini.py \"{output_path}\"")
+            except Exception as _e:
+                print(f"WARN: sanitize_for_gemini failed on {output_path}: {_e}")
 
 def get_files_to_process(root_dir):
     files = []
