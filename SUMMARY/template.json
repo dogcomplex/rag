@@ -11,12 +11,12 @@
     ],
     "excluded_files_with_tree": ["styles.css"],
     "excluded_file_types": [
-      ".tool", ".zip", ".png", ".jpg", ".jpeg", ".sh", ".patch", ".gz", ".log", ".safetensors", ".pyc", ".pyco", ".parquet", ".so", ".dll", ".lib", ".a", ".dylib", ".pdb", ".o", ".exe", ".ogg", ".wav", ".psd", ".ttf", ".ico", ".mpg", ".bin", ".obj", ".dat", ".pak", ".bk2", ".mp3", ".mov", ".mp4", ".webm", ".gif", ".zip", ".tar", ".rar", ".7z", ".iso", ".img", ".doc", ".docx", ".pdf", ".xls", ".xlsx", ".ppt", ".pptx", ".swc", ".fla", ".swf", ".svg", ".pyc"
+      ".tool", ".zip", ".png", ".mp4", ".jpg", ".jpeg", ".sh", ".patch", ".gz", ".log", ".safetensors", ".pyc", ".pyco", ".parquet", ".so", ".dll", ".lib", ".a", ".dylib", ".pdb", ".o", ".exe", ".ogg", ".wav", ".psd", ".ttf", ".ico", ".mpg", ".bin", ".obj", ".dat", ".pak", ".bk2", ".mp3", ".mov", ".mp4", ".webm", ".gif", ".zip", ".tar", ".rar", ".7z", ".iso", ".img", ".doc", ".docx", ".pdf", ".xls", ".xlsx", ".ppt", ".pptx", ".swc", ".fla", ".swf", ".svg", ".pyc"
     ],
     "excluded_folders": [
-      "SUMMARY", ".knowledge", "checkpoints", "function_caches", "plots", "redist", ".git", ".idea", ".ignore", "node_modules", "myenv", ".vs", ".vscode", "venv", "concats", "concatenator", "__pycache__", "vllm", "data", "dist", "build", "coverage", "FAE"
+      "SUMMARY", "docs", "venv-cpu", "cpu_test_model",  ".knowledge", "checkpoints", "function_caches", "plots", "redist", ".git", ".idea", ".ignore", "node_modules", "myenv", ".vs", ".vscode", "venv", "concats", "concatenator", "__pycache__", "vllm", "data", "dist", "build", "coverage", "FAE", "screenshots"
     ],
-    "excluded_contents_folder": [".knowledge", ".venv", ".git", "__tests__", "venv", "concats", "FAE"]
+    "excluded_contents_folder": [".knowledge", ".venv", "venv-cpu", "cpu_test_model", ".git", "__tests__", "venv", "concats", "FAE", "screenshots"]
   },
   "target": "./",
   "output": "SUMMARY/summaries"

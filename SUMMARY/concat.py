@@ -12,16 +12,49 @@ except Exception:
 # Define encodings globally for use in multiple functions
 encodings = ['utf-8', 'latin-1', 'cp1252']
 
-if len(sys.argv) not in [2, 3]:
-    print("Usage: python concat.py <config_key> [--batch]")
+# Simple CLI parsing supporting optional flags and options with values
+args = sys.argv[1:]
+if len(args) < 1:
+    print("Usage: python concat.py <config_path.json> [--batch] [--tree-only] [--max-per-folder N]")
     sys.exit(1)
 
-if len(sys.argv) == 3 and sys.argv[2] != '--batch':
-    print(f"Error: Unknown argument '{sys.argv[2]}'")
-    print("Usage: python concat.py <config_key> [--batch]")
-    sys.exit(1)
+config_path = args[0]
+batch_mode = False
+tree_only_mode = False
+max_entries_per_folder = None  # can be overridden by CLI or config
 
-config_path = sys.argv[1]
+i = 1
+while i < len(args):
+    token = args[i]
+    if token == '--batch':
+        batch_mode = True
+    elif token == '--tree-only':
+        tree_only_mode = True
+    elif token.startswith('--max-per-folder='):
+        val = token.split('=', 1)[1].strip()
+        try:
+            n = int(val)
+            max_entries_per_folder = n if n > 0 else None
+        except ValueError:
+            print("Error: --max-per-folder requires an integer value.")
+            sys.exit(1)
+    elif token == '--max-per-folder':
+        if i + 1 >= len(args):
+            print("Error: --max-per-folder requires a value.")
+            sys.exit(1)
+        i += 1
+        val = args[i]
+        try:
+            n = int(val)
+            max_entries_per_folder = n if n > 0 else None
+        except ValueError:
+            print("Error: --max-per-folder requires an integer value.")
+            sys.exit(1)
+    else:
+        print(f"Error: Unknown argument '{token}'")
+        print("Usage: python concat.py <config_path.json> [--batch] [--tree-only] [--max-per-folder N]")
+        sys.exit(1)
+    i += 1
 
 if os.path.isdir(config_path):
     print(f"Error: Configuration path '{config_path}' is a directory. Please provide a path to a JSON configuration file.")
@@ -54,6 +87,15 @@ original_config_output_folder = configs.get("output") # Keep original for potent
 if original_config_output_folder != output_folder:
     print(f"INFO: Overriding output folder from config ('{original_config_output_folder}') to '{output_folder}'")
 name = configs["name"]
+
+# Optional config default for per-folder entry limit (CLI overrides if provided)
+if max_entries_per_folder is None:
+    try:
+        cfg_limit = config.get("max_entries_per_folder", None)
+        if isinstance(cfg_limit, int) and cfg_limit > 0:
+            max_entries_per_folder = cfg_limit
+    except Exception:
+        pass
 
 # Helper function to get file size in bytes
 def get_file_size_bytes(file_path):
@@ -95,13 +137,45 @@ def _generate_summary_recursive_helper(current_path, indent, parent_excluded=Fal
     current_dir_total_bytes = 0
 
     try:
-        items = sorted(os.listdir(current_path))
+        use_direntry = False
+        had_more = False
+        items_iter = None
+        # Prefer scandir with early break to avoid loading huge directory listings
+        if max_entries_per_folder is not None and max_entries_per_folder > 0:
+            try:
+                limited_entries = []
+                with os.scandir(current_path) as it:
+                    for entry in it:
+                        if len(limited_entries) >= max_entries_per_folder:
+                            had_more = True
+                            break
+                        limited_entries.append(entry)
+                items_iter = sorted(limited_entries, key=lambda e: e.name)
+                use_direntry = True
+            except Exception:
+                # Fallback to listdir if scandir fails; still limit after sorting
+                names = sorted(os.listdir(current_path))
+                if len(names) > max_entries_per_folder:
+                    had_more = True
+                    names = names[:max_entries_per_folder]
+                items_iter = names
+                use_direntry = False
+        else:
+            # No limit requested
+            items_iter = sorted(os.listdir(current_path))
+            use_direntry = False
     except OSError:
         return [], 0
 
-    for item_name in items:
-        item_full_path = os.path.join(current_path, item_name)
-        is_dir = os.path.isdir(item_full_path)
+    for item in items_iter:
+        if use_direntry:
+            item_name = item.name
+            item_full_path = item.path
+            is_dir = item.is_dir(follow_symlinks=False)
+        else:
+            item_name = item
+            item_full_path = os.path.join(current_path, item_name)
+            is_dir = os.path.isdir(item_full_path)
         
         item_is_cause_of_exclusion = False
         if is_dir:
@@ -135,6 +209,10 @@ def _generate_summary_recursive_helper(current_path, indent, parent_excluded=Fal
             bytes_in_file = get_file_size_bytes(item_full_path)
             child_lines.append(f"{' ' * indent}{prefix} {item_name} ({bytes_in_file} bytes)")
             current_dir_total_bytes += bytes_in_file
+    
+    # If there were more entries than we displayed, indicate truncation
+    if had_more:
+        child_lines.append(f"{' ' * indent}... (skipping remaining items)")
 
     return child_lines, current_dir_total_bytes
 
@@ -186,7 +264,7 @@ def filter_base64(content):
                 if value_part.endswith('"') or value_part.endswith('",'):
                     value_part = value_part[:-1]
                     if value_part.endswith('"'):
-                         value_part = value_part[:-1]
+                        value_part = value_part[:-1]
                 
                 # Check if the cleaned value part is a long base64 string.
                 if len(value_part) > 200 and base64_pattern.match(value_part):
@@ -299,6 +377,32 @@ def concatenate_files_and_split(root_dir, tree_content, base_prompt_text, output
             except Exception as _e:
                 print(f"WARN: sanitize_for_gemini failed on {output_path}: {_e}")
 
+def write_tree_only_output(tree_content, base_prompt_text, output_name):
+    global output_folder, sanitize_for_gemini, _gem_sanitize
+    header_and_tree_content = base_prompt_text + tree_content
+    timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')[:-3]
+    output_filename = f"{timestamp}_{output_name}.txt"
+    os.makedirs(output_folder, exist_ok=True)
+    output_path = os.path.join(output_folder, output_filename)
+    print(f"Writing tree-only output to: {output_path}")
+    with open(output_path, 'w', encoding='utf-8') as outfile:
+        outfile.write(header_and_tree_content)
+
+    if sanitize_for_gemini:
+        try:
+            if _gem_sanitize is not None:
+                with open(output_path, 'r', encoding='utf-8', errors='ignore') as _rf:
+                    _raw = _rf.read()
+                _clean = _gem_sanitize(_raw)
+                _sanitized_path = os.path.splitext(output_path)[0] + "_sanitized.txt"
+                with open(_sanitized_path, 'w', encoding='utf-8') as _wf:
+                    _wf.write(_clean)
+                print(f"Sanitized file written to: {_sanitized_path}")
+            else:
+                os.system(f"python SUMMARY/sanitize_for_gemini.py \"{output_path}\"")
+        except Exception as _e:
+            print(f"WARN: sanitize_for_gemini failed on {output_path}: {_e}")
+
 def get_files_to_process(root_dir):
     files = []
     if not os.path.isdir(root_dir):
@@ -334,7 +438,7 @@ def get_files_to_process(root_dir):
 base_prompt = """Here is the file tree and contents of all files in the project:
 """
 
-def run_single_summary(root_dir, output_name):
+def run_single_summary(root_dir, output_name, tree_only=False):
     # For single files, ensure they are not excluded before proceeding
     if not os.path.isdir(root_dir):
         filename = os.path.basename(root_dir)
@@ -346,12 +450,13 @@ def run_single_summary(root_dir, output_name):
     tree_header = "target_folder: " + root_dir + ("/" if os.path.isdir(root_dir) else "") + "\n"
     full_tree_for_concat = tree_header + tree_summary_content
     
-    concatenate_files_and_split(root_dir, full_tree_for_concat, base_prompt, output_name)
+    if tree_only:
+        write_tree_only_output(full_tree_for_concat, base_prompt, output_name)
+    else:
+        concatenate_files_and_split(root_dir, full_tree_for_concat, base_prompt, output_name)
 
 
 if __name__ == "__main__":
-    batch_mode = len(sys.argv) == 3 and sys.argv[2] == '--batch'
-    
     if batch_mode:
         print("Running in batch mode...")
         # In batch mode, iterate over items in the target folder
@@ -363,8 +468,8 @@ if __name__ == "__main__":
                 print(f"Skipping excluded directory in batch mode: {item_path}")
                 continue
 
-            run_single_summary(item_path, f"{name}_{item_name}")
+            run_single_summary(item_path, f"{name}_{item_name}", tree_only=tree_only_mode)
     else:
         # Default behavior: run on the entire target folder
         print("Running in single mode...")
-        run_single_summary(target_folder, name)
+        run_single_summary(target_folder, name, tree_only=tree_only_mode)
